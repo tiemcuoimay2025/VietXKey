@@ -71,8 +71,11 @@ void vf_engine_set_spell_check(VfEngine *engine, bool enabled);
 void vf_engine_set_modern_style(VfEngine *engine, bool enabled);
 void vf_engine_set_auto_restore(VfEngine *engine, bool enabled);
 void vf_engine_set_free_marking(VfEngine *engine, bool enabled);
+void vf_engine_set_preserve_informal_marks(VfEngine *engine, bool enabled);
 void vf_engine_set_enable_macro(VfEngine *engine, bool enabled);
 void vf_engine_set_auto_switch_by_typing(VfEngine *engine, bool enabled);
+/* Permitted extra consonant initials: bit 0 = a, ... bit 25 = z; 0 = none. */
+void vf_engine_set_foreign_initials_mask(VfEngine *engine, uint32_t mask);
 
 /*
  * Legacy borrowed UTF-8 ABI: out_len is the FULL required byte count on

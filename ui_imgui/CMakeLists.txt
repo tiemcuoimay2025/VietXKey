@@ -27,6 +27,7 @@ add_library(vietflow_ui STATIC
     src/config.cpp
     src/theme.cpp
     src/ui_manager.cpp
+    src/donation_qr.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
@@ -41,6 +42,8 @@ target_include_directories(vietflow_ui PUBLIC
     ${IMGUI_DIR}/backends
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/single_include
 )
+
+target_link_libraries(vietflow_ui PUBLIC windowscodecs ole32)
 
 target_compile_options(vietflow_ui PRIVATE /utf-8 /Gy /Gw /Zc:inline)
 
@@ -58,6 +61,7 @@ option(VIETFLOW_BUILD_CONFIG_TESTS "Build isolated C++ config persistence regres
 if (VIETFLOW_BUILD_CONFIG_TESTS)
     enable_testing()
     add_executable(vietflow_config_persistence_test tests/config_persistence_test.cpp)
+    target_compile_options(vietflow_config_persistence_test PRIVATE /utf-8)
     target_link_libraries(vietflow_config_persistence_test PRIVATE vietflow_ui shell32)
     add_test(NAME vietflow_config_persistence COMMAND vietflow_config_persistence_test)
 endif()

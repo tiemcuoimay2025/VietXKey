@@ -11,6 +11,10 @@ void SetEmbeddedFontData(const void* data, size_t size) {
     vietflow::SetEmbeddedFontData(data, size);
 }
 
+void SetHeadingFontData(const void* data, size_t size) {
+    vietflow::SetHeadingFontData(data, size);
+}
+
 void SetTrayFontData(const void* data, size_t size) {
     vietflow::SetTrayFontData(data, size);
 }

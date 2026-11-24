@@ -112,9 +112,9 @@ pub fn create_app_icon() -> HICON {
 
     // 2. Fall back to loading from disk assets if running in unbundled dev environment
     let candidate_paths = [
-        "assets/VietFlow.ico",
-        "../../assets/VietFlow.ico",
-        "../assets/VietFlow.ico",
+        "assets/VietXKey.ico",
+        "../../assets/VietXKey.ico",
+        "../assets/VietXKey.ico",
     ];
     for p in &candidate_paths {
         if std::path::Path::new(p).is_file() {
@@ -147,9 +147,9 @@ pub fn create_tsf_icon() -> HICON {
 
     // 2. Fall back to loading from disk assets
     let candidate_paths = [
-        "assets/VietFlow-TSF.ico",
-        "../../assets/VietFlow-TSF.ico",
-        "../assets/VietFlow-TSF.ico",
+        "assets/VietXKey-TSF.ico",
+        "../../assets/VietXKey-TSF.ico",
+        "../assets/VietXKey-TSF.ico",
     ];
     for p in &candidate_paths {
         if std::path::Path::new(p).is_file() {
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn test_loads_custom_icon_file() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/VietFlow.ico");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/VietXKey.ico");
         let icon = load_icon_from_file(path);
         assert!(icon.is_some(), "custom .ico must load");
         unsafe {

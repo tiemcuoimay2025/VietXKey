@@ -21,19 +21,34 @@
 namespace vietflow {
 
 void SetEmbeddedFontData(const void* data, size_t size);
+void SetHeadingFontData(const void* data, size_t size);
 void SetTrayFontData(const void* data, size_t size);
 ImFont* TrayFont();
+ImFont* HeadingFont();
 void ApplyTheme(float dpi_scale = 1.0f);
+void SetDarkTheme(bool dark);
+bool IsDarkTheme();
+inline ImU32 ThemeColor(ImU32 dark, ImU32 light) { return IsDarkTheme() ? dark : light; }
+ImU32 ThemeTextColor(ImU32 color);
+void DrawAppBackground(ImDrawList* draw, ImVec2 min, ImVec2 max);
+void DrawBrandKeycap(ImDrawList* draw, ImVec2 min, float size);
 void SetupFonts(ImGuiIO& io, float dpi_scale = 1.0f);
 
 // Current UI scale (1.0 at 96 DPI). Every hard-coded pixel size must go through
 // Px() so the layout keeps its proportions on high-DPI/multi-monitor setups.
 float UiScale();
 inline float Px(float value) { return value * UiScale(); }
+// Readable type sizes are independent of layout pixels, then scale with DPI.
+inline float TextPx(float value) {
+    const float readable = value * 1.25f;
+    return Px(readable < 14.0f ? 14.0f : readable);
+}
 
 // Helper UI widgets for ImGui
 void SectionHeader(const char* title);
 void HotkeyBadge(const char* text);
 bool NavItem(const char* label, bool selected);
+void GradientPanel(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 left, ImU32 right, float rounding);
+bool ToggleSwitch(const char* id, bool* value);
 
 } // namespace vietflow

@@ -29,9 +29,9 @@ function Write-Pe([string]$path,[string]$arch) {
 try {
     foreach($arch in @('x64','x86','arm64')) {
         $dll = switch($arch) {
-            'x86' {'vietflow_tsf_x86.dll'}
-            'arm64' {'vietflow_tsf_arm64.dll'}
-            default {'vietflow_tsf.dll'}
+            'x86' {'vietxkey_tsf_x86.dll'}
+            'arm64' {'vietxkey_tsf_arm64.dll'}
+            default {'vietxkey_tsf.dll'}
         }
         Write-Pe (Join-Path $dist "VietFlow-$arch.exe") $arch
         Write-Pe (Join-Path $dist $dll) $arch
@@ -61,12 +61,12 @@ try {
     Check-Reject { & $msiBuilder -Arch x86 -DistDir $dist -ValidateSourcesOnly } 'MSI builder rejects wrong architecture'
     Write-Pe $exeX86 'x86'
 
-    $dll = Join-Path $dist 'vietflow_tsf.dll'
+    $dll = Join-Path $dist 'vietxkey_tsf.dll'
     Remove-Item -LiteralPath $dll
     # Fake stale build artifacts must not become fallback release inputs.
     $oldBuild = Join-Path $root 'platforms/windows_tsf/build/Release'
     New-Item -ItemType Directory -Path $oldBuild -Force | Out-Null
-    Write-Pe (Join-Path $oldBuild 'vietflow_tsf.dll') 'x64'
+    Write-Pe (Join-Path $oldBuild 'vietxkey_tsf.dll') 'x64'
     Check-Reject { Get-VietFlowReleaseInputs -Arch x64 -DistDir $dist } 'missing canonical DLL never falls back to stale build'
     Check-Reject { & $msiBuilder -Arch x64 -DistDir $dist -ValidateSourcesOnly } 'MSI builder blocks missing canonical DLL'
     Write-Pe $dll 'x64'

@@ -41,10 +41,12 @@ struct AppProfile {
 
 struct Config {
     bool enabled = true;
+    bool dark_theme = true;
     int method = 0;       // 0: Telex, 1: VNI, 2: VIQR, 3: Simple Telex, 4: Simple Telex 2, 5: Telex + VNI, 6: User Custom
     int charset = 0;      // 0: Unicode, 1: Composite, 2: TCVN3, 3: VNI Windows
     bool modern_style = true;
     bool free_marking = true;
+    bool preserve_informal_marks = false;
     bool spell_check = true;
     bool auto_restore = true;
     bool auto_switch_by_typing = true;
@@ -57,6 +59,7 @@ struct Config {
     bool allow_macro_when_disabled = false;
     int injection_mode = 0; // 0 Auto, 1 Unicode, 2 scan-code, 4 safe; 3 is legacy
     bool start_with_windows = false;
+    bool show_settings_on_startup = true;
     bool notification_sound = false;
     bool use_tsf = false;
     uint64_t typing_timeout_ms = 0;
@@ -92,13 +95,15 @@ struct Config {
     std::map<std::string, bool> per_app_modes;
     std::map<std::string, AppProfile> app_profiles;
     std::map<std::string, std::string> macros = {
-        {"vf", "VietFlow"},
+        {"vxk", "VietXKey"},
         {"vn", "Việt Nam"},
         {"chxhcnvn", "Cộng hòa Xã hội Chủ nghĩa Việt Nam"}
     };
     CustomKeymap custom_keymap;
 
     static std::string GetDefaultConfigPath();
+    static bool MigrateLegacyConfig(const std::string& target,
+                                    const std::vector<std::string>& candidates);
     // Optional primary-only validation avoids promoting semantically corrupt
     // JSON to the last-known-good backup during Save().
     bool Load(const std::string& path = "", bool use_backup = true);

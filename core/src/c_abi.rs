@@ -428,6 +428,20 @@ pub unsafe extern "C" fn vf_engine_set_free_marking(engine: *mut c_void, enabled
     }
 }
 
+/// Prefer visible Vietnamese marks over automatic spelling/English recovery.
+///
+/// # Safety
+/// `engine` must point to a live engine with exclusive access, if non-null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_preserve_informal_marks(engine: *mut c_void, enabled: bool) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        if engine.options.preserve_informal_marks != enabled {
+            engine.options.preserve_informal_marks = enabled;
+            engine.reset();
+        }
+    }
+}
+
 /// Sets whether macro expansion is enabled in the engine.
 ///
 /// # Safety
@@ -447,6 +461,22 @@ pub unsafe extern "C" fn vf_engine_set_enable_macro(engine: *mut c_void, enabled
 pub unsafe extern "C" fn vf_engine_set_auto_switch_by_typing(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
         engine.options.auto_switch_by_typing = enabled;
+    }
+}
+
+/// Set permitted extra consonant initials (bit 0 = a, ... bit 25 = z).
+/// Unknown bits are ignored; zero permits only standard Vietnamese initials.
+///
+/// # Safety
+/// `engine` must point to a live engine with exclusive access, if non-null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_foreign_initials_mask(engine: *mut c_void, mask: u32) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        let initials: Vec<char> = ('a'..='z').filter(|c| mask & (1 << (*c as u32 - 'a' as u32)) != 0).collect();
+        if engine.options.foreign_initials != initials {
+            engine.options.foreign_initials = initials;
+            engine.reset();
+        }
     }
 }
 

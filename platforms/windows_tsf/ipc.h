@@ -22,7 +22,8 @@ struct TsfSharedConfig {
     uint32_t enable_macro;
     uint32_t version;
     uint32_t sequence;
-    uint32_t reserved;
+    uint32_t foreign_initials_mask; // bit 0 = a, ... bit 25 = z
+    uint32_t preserve_informal_marks; // v4: opt-in, default 0
 };
 struct TsfFocusState {
     uint64_t last_active_tick;
@@ -30,8 +31,9 @@ struct TsfFocusState {
     uint32_t is_composing;
 };
 #pragma pack(pop)
-static_assert(sizeof(TsfSharedConfig) == 48, "Rust/C++ config ABI mismatch");
+static_assert(sizeof(TsfSharedConfig) == 52, "Rust/C++ config ABI mismatch");
 static_assert(sizeof(TsfFocusState) == 16, "Rust/C++ focus ABI mismatch");
+static constexpr uint32_t VF_TSF_FOREIGN_INITIALS_VALID_MASK = (1u << 26) - 1u;
 
 class SharedConfigReader {
 public:

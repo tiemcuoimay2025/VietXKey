@@ -10,6 +10,7 @@ namespace vietflow {
 enum class Page {
     Overview,
     Typing,
+    Shortcuts,
     Macros,
     Apps,
     TrayIcon,
@@ -33,15 +34,18 @@ public:
 private:
     void PageOverview();
     void PageTyping();
+    void PageShortcuts();
     void PageMacros();
     void PageApps();
     void PageTrayIcon();
     void PageAbout();
+    void RenderDonationPopup();
+    bool donation_popup_requested_ = false;
 
     Config config_;
     std::string config_path_;
     void* hwnd_ = nullptr;
-    Page initial_page_ = Page::Overview;
+    Page current_page_ = Page::Overview;
     long long last_config_mtime_ = 0;
     float config_check_timer_ = 0.0f;
     float tsf_check_timer_ = 0.0f;

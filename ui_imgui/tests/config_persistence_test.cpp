@@ -61,9 +61,103 @@ int main(int argc, char** argv) {
             ~Cleanup() { std::error_code ec; fs::remove_all(root, ec); }
         } cleanup{directory};
 
+        const auto themePath = directory / "theme.json";
+        { std::ofstream f(themePath); f << "{}"; }
+        vietflow::Config theme;
+        if (!check(theme.Load(themePath.string()) && theme.dark_theme, "legacy theme remains dark")) return 103;
+        for (bool dark : {false, true}) {
+            theme.dark_theme = dark;
+            if (!check(theme.Save(themePath.string()), "save selected theme")) return 104;
+            vietflow::Config loaded;
+            if (!check(loaded.Load(themePath.string()) && loaded.dark_theme == dark, "theme survives save/reload")) return 105;
+        }
+        const auto writingPath = directory / "free-writing.json";
+        { std::ofstream f(writingPath); f << "{}"; }
+        vietflow::Config writing;
+        if (!check(writing.Load(writingPath.string()) && !writing.preserve_informal_marks,
+                   "legacy config defaults free writing off")) return 100;
+        for (bool enabled : {true, false}) {
+            writing.preserve_informal_marks = enabled;
+            if (!check(writing.Save(writingPath.string()), "save free-writing preference")) return 101;
+            vietflow::Config loaded;
+            if (!check(loaded.Load(writingPath.string()) && loaded.preserve_informal_marks == enabled,
+                       "free-writing preference persists")) return 102;
+        }
+        const auto macroPath = directory / "macro-upgrade.json";
+        if (!check(vietflow::Config().macros.at("vxk") == "VietXKey" && vietflow::Config().macros.count("vf") == 0,
+                   "branded default macro")) return 96;
+        struct MacroCase { const char* json; const char* vf; const char* vxk; };
+        for (const auto& fixture : {
+            MacroCase{R"({"macros":{"vf":"VietFlow","mine":"keep"}})", nullptr, "VietXKey"},
+            MacroCase{R"({"macros":{"vf":"custom","vxk":"my expansion","mine":"keep"}})", "custom", "my expansion"},
+            MacroCase{R"({"macros":{"vf":"VietFlow","vxk":"my expansion","mine":"keep"}})", nullptr, "my expansion"},
+            MacroCase{R"({"macros":{"mine":"keep"}})", nullptr, nullptr}
+        }) {
+            { std::ofstream f(macroPath); f << fixture.json; }
+            vietflow::Config macroConfig;
+            if (!check(macroConfig.Load(macroPath.string(), false), "load macro upgrade fixture")) return 97;
+            auto matches = [&](const char* key, const char* value) {
+                auto found = macroConfig.macros.find(key);
+                return value ? found != macroConfig.macros.end() && found->second == value : found == macroConfig.macros.end();
+            };
+            if (!check(matches("vf", fixture.vf) && matches("vxk", fixture.vxk) && matches("mine", "keep"),
+                       "upgrade exact sample while preserving custom/deleted mappings")) return 98;
+            if (!check(macroConfig.Save(macroPath.string()) && macroConfig.Load(macroPath.string()) && matches("vxk", fixture.vxk),
+                       "macro upgrade survives save/reload")) return 99;
+        }
+
+        // Real branded upgrade: raw fields and a distinct previous backup
+        // survive; valid new primary/backup always wins over the old name.
+        const auto branded = directory / "vietxkey_config.json";
+        const auto legacy = directory / "vietflow_config.json";
+        auto brandedBackup = branded; brandedBackup += L".bak";
+        auto legacyBackup = legacy; legacyBackup += L".bak";
+        const std::string oldRaw = R"({"method":1,"hotkey_mode":"AltZ","macros":{"brb":"Đà Nẵng"},"app_profiles":{"comet.exe":{"method":2}},"future_setting":{"keep":true}})";
+        const std::string backupRaw = R"({"method":2,"macros":{"backup":"preserved"}})";
+        { std::ofstream f(legacy); f << oldRaw; }
+        { std::ofstream f(legacyBackup); f << backupRaw; }
+        const std::vector<std::string> sources{legacy.string()};
+        if (!check(vietflow::Config::MigrateLegacyConfig(branded.string(), sources), "migrate legacy name") ||
+            !check(bytes(branded) == oldRaw && bytes(brandedBackup) == backupRaw, "raw config and distinct backup retained") ||
+            !check(bytes(legacy) == oldRaw && bytes(legacyBackup) == backupRaw, "legacy originals untouched")) return 90;
+        vietflow::Config migrated;
+        if (!check(migrated.Load(branded.string()) && migrated.hotkey_mode == "AltZ" &&
+                   migrated.macros["brb"] == "Đà Nẵng" && migrated.app_profiles["comet.exe"].method == 2,
+                   "macros profiles and hotkeys survive")) return 91;
+        { std::ofstream f(legacy); f << R"({"method":0})"; }
+        if (!check(vietflow::Config::MigrateLegacyConfig(branded.string(), sources) && bytes(branded) == oldRaw,
+                   "new primary takes precedence")) return 92;
+        { std::ofstream f(branded); f << "broken-new-file"; }
+        if (!check(vietflow::Config::MigrateLegacyConfig(branded.string(), sources) && bytes(branded) == "broken-new-file" &&
+                   migrated.Load(branded.string()) && migrated.method == 2, "new backup takes precedence")) return 93;
+        fs::remove(brandedBackup);
+        { std::ofstream f(legacy); f << R"({"method":"invalid"})"; }
+        if (!check(vietflow::Config::MigrateLegacyConfig(branded.string(), sources) && bytes(branded) == backupRaw,
+                   "recover old backup when primary is invalid")) return 94;
+        const auto absent = directory / "empty" / "vietxkey_config.json";
+        { std::ofstream f(legacyBackup); f << "invalid-backup"; }
+        if (!check(!vietflow::Config::MigrateLegacyConfig(absent.string(), sources) && !fs::exists(absent),
+                   "invalid legacy data never creates defaults")) return 95;
+
         const auto primary = directory / "settings.json";
         auto backup = primary;
         backup += L".bak";
+
+        // Old startup configurations inherit the new show-settings default;
+        // an explicit user opt-out must survive GUI persistence.
+        const auto startup_path = directory / "startup-settings.json";
+        {
+            std::ofstream legacy(startup_path);
+            legacy << R"({"start_with_windows":true})";
+        }
+        vietflow::Config startup;
+        if (!check(startup.Load(startup_path.string()) && startup.show_settings_on_startup,
+                   "legacy startup config enables settings window")) return 72;
+        startup.show_settings_on_startup = false;
+        if (!check(startup.Save(startup_path.string()), "save startup UI opt-out")) return 73;
+        vietflow::Config startup_reloaded;
+        if (!check(startup_reloaded.Load(startup_path.string()) && !startup_reloaded.show_settings_on_startup,
+                   "startup UI opt-out persists")) return 74;
 
         vietflow::Config original;
         original.enabled = true;

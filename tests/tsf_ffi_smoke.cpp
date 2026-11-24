@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <utility>
 
 static int Fail(const char* why) {
     std::cerr << "F04 owned UTF-8 smoke FAIL: " << why << '\n';
@@ -67,6 +68,57 @@ int main() {
         if (needed <= sizeof(tiny) || vf_english_keywords(tiny, sizeof(tiny)) != needed ||
             tiny[0] != 0xa5 || tiny[3] != 0xa5)
             status = Fail("keyword buffer partial write");
+    }
+    for (const uint32_t mask : {0u, 1u << ('z' - 'a')}) {
+        vf_engine_reset(engine);
+        vf_engine_set_foreign_initials_mask(engine, mask);
+        for (const char ch : std::string("zeef")) {
+            VfOwnedUtf8 output = {};
+            size_t backspaces = 0;
+            if (!vf_engine_process_key_owned(engine, ch, &output, &backspaces))
+                status = Fail("foreign initial key processing");
+            Take(output);
+        }
+        const std::string expected = mask ? u8"zề" : "zeef";
+        VfOwnedUtf8 preedit = {};
+        if (!vf_engine_get_preedit_owned(engine, &preedit) || Take(preedit) != expected)
+            status = Fail("foreign initial preedit does not match configured mask");
+        VfOwnedUtf8 committed = {};
+        if (!vf_engine_finish_on_break_owned(engine, ' ', &committed) || Take(committed) != expected)
+            status = Fail("foreign initial lost at TSF finalization");
+    }
+    // Regressions for the same native entry points consumed by the TSF DLL.
+    for (const auto& pair : {std::pair<const char*, const char*>{"ofh", u8"òh"},
+                            {"ohf", u8"òh"}, {"zoo", u8"zô"}, {"zoos", u8"zố"},
+                            {"test", "test"}, {"hix", "hix"}, {"mixx", "mix"}}) {
+        vf_engine_reset(engine);
+        for (const char ch : std::string(pair.first)) {
+            VfOwnedUtf8 output = {};
+            size_t backspaces = 0;
+            if (!vf_engine_process_key_owned(engine, ch, &output, &backspaces))
+                status = Fail("informal/recovery key processing");
+            Take(output);
+        }
+        VfOwnedUtf8 committed = {};
+        if (!vf_engine_finish_on_break_owned(engine, ' ', &committed) || Take(committed) != pair.second)
+            status = Fail("informal/recovery commit mismatch");
+        VfOwnedUtf8 after = {};
+        if (!vf_engine_get_preedit_owned(engine, &after) || !Take(after).empty())
+            status = Fail("commit did not reset preedit");
+    }
+    for (const bool enabled : {false, true}) {
+        vf_engine_reset(engine);
+        vf_engine_set_preserve_informal_marks(engine, enabled);
+        for (const char ch : std::string("capf")) {
+            VfOwnedUtf8 output = {}; size_t backspaces = 0;
+            if (!vf_engine_process_key_owned(engine, ch, &output, &backspaces))
+                status = Fail("free-writing key processing");
+            Take(output);
+        }
+        VfOwnedUtf8 committed = {};
+        const std::string expected = enabled ? u8"càp" : "capf";
+        if (!vf_engine_finish_on_break_owned(engine, ' ', &committed) || Take(committed) != expected)
+            status = Fail("free-writing commit did not follow preference");
     }
     vf_engine_destroy(engine);
     if (!status) std::cout << "F04 owned UTF-8 C++/Rust ABI smoke PASS\n";

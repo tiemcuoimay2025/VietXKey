@@ -5,7 +5,27 @@ These files are embedded into `VietFlow.exe` by
 
 ## Font
 
-`JetBrainsMonoNerdFont-Regular.ttf` is a **subset** of the upstream
+The moss UI embeds **Nunito Medium (500)** for body text and **Nunito ExtraBold
+(800)** for headings. Both proportional, rounded faces contain Vietnamese glyphs
+and are subset to about 37 KB each:
+
+- `Nunito-Medium.ttf`
+- `Nunito-ExtraBold.ttf`
+
+Source: [Google Fonts Nunito](https://github.com/google/fonts/tree/main/ofl/nunito),
+`Nunito[wght].ttf`, SIL Open Font License 1.1 (`Nunito-OFL.txt`). The static
+instances were generated with fontTools, stripped of hinting and unused layout
+features, and merged with the 14 UI icons from the full JetBrains Nerd Font.
+The icon portion retains its upstream SIL OFL license (`full/OFL.txt`). The info
+icon uses U+F05A, matching `NF_INFO` in `theme.h`.
+
+The font bytes are embedded by Rust and handed directly to the C++ font atlas.
+No system font installation or font download is needed at runtime. Tray font
+data remains separate from the UI fonts.
+
+### Legacy font and icon source
+
+`JetBrainsMonoNerdFont-Regular.ttf` is the original **subset** of the upstream
 JetBrains Mono Nerd Font (kept in `full/`). It contains only the glyphs the UI
 can render:
 
@@ -55,3 +75,10 @@ height, renaming the family to `VietFlow Tray`, and subsetting to
 `assets/VietFlow.ico` uses PNG compression for the 256×256 frame (Windows
 Vista+); the 16/32/48 frames stay as BMP. Keep the source icon outside the repo
 if you need to regenerate it.
+
+## VietXKey donation QR
+
+`vietxkey_donation_qr.png` is the original user-provided 256x256 PNG.
+It is embedded verbatim in `src/donation_qr_data.h`; no QR regeneration,
+recoloring or external service is used. SHA-256:
+`eb5e6cdca09863b06e974678d1b1d22bcfe73682226e74384e773420e0d0f01e`.

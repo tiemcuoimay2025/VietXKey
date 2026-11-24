@@ -2,7 +2,7 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use crate::charset::encode_slot;
-use crate::english::{is_english_keyword, is_foreign_initial};
+use crate::english::{is_english_keyword, is_foreign_initial, is_blocked_foreign_initial};
 use crate::input_proc::{
     get_char_type, get_modify_key, get_tone_key, is_ascii_upper, is_letter_fast,
     is_word_break_fast, to_lower_ascii, to_vn_lexi_tone,
@@ -67,6 +67,10 @@ pub struct VietFlowEngine {
     display_shadow: Vec<char>,
     last_key_time_ms: u64,
     pub temp_disabled: bool,
+    // An explicit accent undo is authoritative for the rest of this word.
+    // Its physical keystroke history includes escape keys (WW -> W, DDD -> DD)
+    // that automatic restoration must not replay at the next delimiter.
+    literal_undo: bool,
     pub lookback: crate::autoswitch::LookbackBuffer,
     pub auto_switch_requested: Option<bool>,
     pub pending_doubled_fix: bool,
@@ -96,6 +100,7 @@ impl VietFlowEngine {
             display_shadow: Vec::with_capacity(32),
             last_key_time_ms: 0,
             temp_disabled: false,
+            literal_undo: false,
             lookback: crate::autoswitch::LookbackBuffer::new(),
             auto_switch_requested: None,
             pending_doubled_fix: false,
@@ -135,34 +140,14 @@ impl VietFlowEngine {
     /// Returns the finalized string (expanded macro, restored raw word, or formatted composed word).
     /// Resets the engine word buffer in all cases.
     pub fn finish_composition_on_break(&mut self, _break_char: char) -> String {
-        // 1. Check macro expansion
-        if self.options.enable_macro
-            && !self.macros.is_empty()
-            && (!self.buffer.is_empty() || !self.raw_chars.is_empty())
-        {
-            if let Some(replacement) = self.lookup_raw_macro() {
-                self.reset_word();
-                return replacement;
-            }
-        }
-
-        // 2. Check English auto-restore on invalid Vietnamese syllable
-        let should_restore = self.options.spell_check
-            && self.options.auto_non_vn_restore
-            && !self.buffer.is_empty()
-            && (
-                self.matches_raw_english_keyword()
-                || (!self.temp_disabled && self.has_any_vietnamese_mark() && !self.is_valid_vietnamese_word())
-            );
-
-        if should_restore {
-            let raw: String = self.raw_chars.iter().collect();
-            self.reset_word();
-            return raw;
-        }
-
-        let current = self.current_preedit_text();
-        self.reset_word();
+        // Use the same current-word finalization as Hook mode (macros, explicit
+        // undo, slang and English recovery). TSF cannot delete earlier committed
+        // words, so its commit never requests a lookback rewrite.
+        let mut current = self.current_preedit_text();
+        let (backspaces, output) = self.commit_word_break('\0', false);
+        debug_assert!(backspaces <= current.chars().count());
+        for _ in 0..backspaces { current.pop(); }
+        current.push_str(output.as_str().strip_suffix('\0').unwrap_or(output.as_str()));
         current
     }
 
@@ -177,6 +162,7 @@ impl VietFlowEngine {
         self.vowel_count = 0;
         self.display_shadow.clear();
         self.temp_disabled = false;
+        self.literal_undo = false;
         self.pending_doubled_fix = false;
     }
 
@@ -316,6 +302,9 @@ impl VietFlowEngine {
         if modify_key != ModifyKeyType::None || self.is_double_key_modify(c) {
             if let Some(res) = self.try_apply_modify(modify_key, c) {
                 self.raw_chars.push(c);
+                if self.temp_disabled {
+                    self.literal_undo = true;
+                }
                 return res;
             }
         }
@@ -472,7 +461,7 @@ impl VietFlowEngine {
         self.recalculate_vowel_state();
         let vowel_after_coda = self.update_form_after_append(true);
 
-        if vowel_after_coda && self.options.spell_check && self.options.auto_non_vn_restore && self.has_any_vietnamese_mark() {
+        if vowel_after_coda && self.options.spell_check && self.options.auto_non_vn_restore && !self.options.preserve_informal_marks && self.has_any_vietnamese_mark() {
             return self.restore_raw_buffer_with_new_char(c);
         }
 
@@ -509,6 +498,16 @@ impl VietFlowEngine {
         let slot = Slot::new(c);
         self.buffer.push(slot);
 
+        // Permitting foreign initials must not remove English keyword
+        // protection. Restore a recognized word as soon as its last letter
+        // arrives (e.g. zero), using the pre-key display length.
+        if self.options.spell_check && self.options.auto_non_vn_restore
+            && is_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials)
+            && self.has_any_vietnamese_mark() && self.matches_raw_english_keyword()
+        {
+            return self.restore_raw_buffer_with_new_char(c);
+        }
+
         if is_vowel {
             self.add_vowel(self.buffer.len() - 1, lexi);
             if self.buffer.len() == 2
@@ -526,14 +525,14 @@ impl VietFlowEngine {
             upgrade_from = self.try_upgrade_uo_on_coda();
         }
 
-        if vowel_after_coda && self.options.spell_check && self.options.auto_non_vn_restore && self.has_any_vietnamese_mark() {
+        if vowel_after_coda && self.options.spell_check && self.options.auto_non_vn_restore && !self.options.preserve_informal_marks && self.has_any_vietnamese_mark() {
             return self.restore_raw_buffer_with_new_char(c);
         }
 
         // Phonotactic rule 1: Stop codas (c, ch, p, t) in Vietnamese can only take Acute or Dot tones.
         // If appending this coda creates an impossible tone combination (e.g. "tẽ" + "t" in "texture"),
         // immediately restore raw keystrokes to prevent visible composition corruption.
-        if !is_vowel && self.options.spell_check && self.options.auto_non_vn_restore && self.has_any_vietnamese_mark() {
+        if !is_vowel && self.options.spell_check && self.options.auto_non_vn_restore && !self.options.preserve_informal_marks && self.has_any_vietnamese_mark() {
             let ending_start = self.vowel_start + self.vowel_count;
             if ending_start < self.buffer.len() && self.vowel_count > 0 {
                 let ending_len = self.buffer.len() - ending_start;
@@ -558,7 +557,7 @@ impl VietFlowEngine {
         // (forming 'qu' + 'e'). Any syllable where 'e' follows 'u' without initial 'q' (e.g. -ure in
         // "pure", "cure", "sure", "texture", "picture", "future", or -ue in "blue") is English.
         // If a Vietnamese mark is present (such as hook 'r' on 'u'), restore immediately.
-        if is_vowel && self.options.spell_check && self.options.auto_non_vn_restore && self.has_any_vietnamese_mark() {
+        if is_vowel && self.options.spell_check && self.options.auto_non_vn_restore && !self.options.preserve_informal_marks && self.has_any_vietnamese_mark() {
             let lower_c = to_lower_ascii(c);
             if lower_c == 'e' && self.vowel_count >= 2 && self.buffer.len() >= 2 {
                 let prev_vowel_idx = self.buffer.len() - 2;
@@ -642,14 +641,8 @@ impl VietFlowEngine {
             return None;
         }
 
-        if matches!(self.options.method, InputMethod::SimpleTelex | InputMethod::TelexSimple2)
-            && to_lower_ascii(self.buffer[0].raw_char) == 'w'
-        {
-            return None;
-        }
-
         if self.options.spell_check
-            && is_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials)
+            && is_blocked_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials)
         {
             return None;
         }
@@ -669,6 +662,9 @@ impl VietFlowEngine {
             return Some(self.rebuild_from_index(first_vowel));
         }
 
+        // The same informal h-ending is accepted whether the tone is typed
+        // before or after h (ofh/ohf). Other invalid codas remain blocked.
+        let informal_h = self.is_h_interjection_shape();
         // If the syllable has a coda, validate it before allowing tone
         if has_coda {
             let coda = &self.buffer[last_vowel + 1..];
@@ -678,10 +674,10 @@ impl VietFlowEngine {
                 for (i, slot) in coda.iter().enumerate() {
                     coda_chars[i] = to_lower_ascii(slot.raw_char);
                 }
-                if self.options.spell_check && !is_valid_ending_consonant(&coda_chars[..coda_len]) {
+                if self.options.spell_check && !self.options.preserve_informal_marks && !informal_h && !is_valid_ending_consonant(&coda_chars[..coda_len]) {
                     return None;
                 }
-                if is_stop_coda(&coda_chars[..coda_len])
+                if !self.options.preserve_informal_marks && is_stop_coda(&coda_chars[..coda_len])
                     && matches!(
                         new_tone,
                         VnLexiTone::Grave | VnLexiTone::Hook | VnLexiTone::Tilde
@@ -689,7 +685,7 @@ impl VietFlowEngine {
                 {
                     return None;
                 }
-            } else if self.options.spell_check {
+            } else if self.options.spell_check && !self.options.preserve_informal_marks && !informal_h {
                 return None;
             }
         }
@@ -702,7 +698,7 @@ impl VietFlowEngine {
             self.temp_disabled = true;
             if self.options.auto_switch_by_typing {
                 self.pending_doubled_fix = true;
-                self.auto_switch_requested = Some(false);
+                self.auto_switch_requested = None;
             }
             let backspaces = self.display_len;
             let mut out = KeyText::new();
@@ -744,7 +740,7 @@ impl VietFlowEngine {
         let lower = to_lower_ascii(raw_key);
 
         if self.options.spell_check
-            && is_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials)
+            && is_blocked_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials)
         {
             return None;
         }
@@ -1007,6 +1003,7 @@ impl VietFlowEngine {
                             if slot.modified && matches!(slot.lexi, VnLexiName::ah | VnLexiName::Ah) {
                                 slot.lexi = if slot.is_upper { VnLexiName::A } else { VnLexiName::a };
                                 slot.modified = false;
+                                self.temp_disabled = true;
                                 self.buffer.push(Slot::new(raw_key));
                                 return Some(self.rebuild_current_word());
                             }
@@ -1211,6 +1208,7 @@ impl VietFlowEngine {
                     };
                     slot.modified = false;
                     self.word_form = WordForm::NonVn;
+                    self.temp_disabled = true;
                     self.recalculate_vowel_state();
                     self.refresh_tone_position();
                     return Some(self.rebuild_current_word());
@@ -1265,7 +1263,38 @@ impl VietFlowEngine {
         None
     }
 
+    /// A single-vowel interjection can end in h/HH... in informal writing.
+    /// This is intentionally separate from Vietnamese spelling validation.
+    fn is_h_interjection_shape(&self) -> bool {
+        self.vowel_start == 0 && self.vowel_count == 1 && self.buffer.len() > 1
+            && self.buffer[1..].iter().all(|slot| to_lower_ascii(slot.raw_char) == 'h')
+    }
+
+    fn preserves_informal_composition(&self) -> bool {
+        if self.buffer.is_empty() || self.temp_disabled || !self.has_any_vietnamese_mark()
+            || self.matches_raw_english_keyword() {
+            return false;
+        }
+        if self.options.preserve_informal_marks {
+            return true;
+        }
+        // Preserve explicit informal tones such as òh/àh/ừh, while still
+        // recovering actual English words (e.g. ash) and configured keywords.
+        if self.current_tone != VnLexiTone::None && self.is_h_interjection_shape() {
+            let raw_lower: String = self.raw_chars.iter().map(|c| c.to_ascii_lowercase()).collect();
+            return crate::autoswitch::lookup_en_score(&raw_lower).is_none();
+        }
+        // Permitted foreign initials are an explicit user preference. A valid
+        // marked zô must not be undone just because "zoo" exists in English.
+        is_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials)
+            && self.is_valid_vietnamese_word()
+    }
+
     fn process_word_break(&mut self, c: char) -> (usize, KeyText) {
+        self.commit_word_break(c, true)
+    }
+
+    fn commit_word_break(&mut self, c: char, allow_lookback_rewrite: bool) -> (usize, KeyText) {
         if self.options.enable_macro
             && !self.macros.is_empty()
             && (!self.buffer.is_empty() || !self.raw_chars.is_empty())
@@ -1279,9 +1308,27 @@ impl VietFlowEngine {
             }
         }
 
+        if self.literal_undo {
+            // Respect the visible result of an intentional escape. It is also
+            // a lookback boundary: later English must not replay escape keys.
+            self.lookback.clear();
+            self.reset_word();
+            return (0, KeyText::from_char(c));
+        }
+
+        if self.preserves_informal_composition() {
+            // A deliberate informal spelling is also a lookback boundary:
+            // following English must never replay its physical accent keys.
+            self.lookback.clear();
+            self.reset_word();
+            return (0, KeyText::from_char(c));
+        }
+
         let raw_word: String = self.raw_chars.iter().collect();
         let display_word = self.current_preedit_text();
 
+        // English detection restores the current word only. It never changes
+        // the user's global Vietnamese mode, even when raw text must be rewritten.
         if self.options.auto_switch_by_typing && !self.raw_chars.is_empty() {
             // 1. Doubled key fix: e.g. "mixx" -> "mix"
             if self.pending_doubled_fix {
@@ -1298,7 +1345,7 @@ impl VietFlowEngine {
                         let backspaces = self.display_len;
                         let mut out = KeyText::from_str(&trimmed_raw);
                         out.push_char(c);
-                        self.auto_switch_requested = Some(false);
+                        self.auto_switch_requested = None;
                         self.lookback.push_word(&trimmed_raw, &trimmed_raw, true);
                         self.reset_word();
                         return (backspaces, out);
@@ -1319,12 +1366,13 @@ impl VietFlowEngine {
 
             if is_english_word {
                 // 3. Look-back Multi-Word Check (e.g. "thí makes" -> "this makes")
-                if let Some((extra_backspaces, restored_prefix)) = self.lookback.check_lookback_restore_for_english(&raw_word) {
+                if let Some((extra_backspaces, restored_prefix)) = allow_lookback_rewrite
+                    .then(|| self.lookback.check_lookback_restore_for_english(&raw_word)).flatten() {
                     let total_backspaces = self.display_len + extra_backspaces;
                     let mut out = KeyText::from_str(&restored_prefix);
                     out.push_str(&raw_word);
                     out.push_char(c);
-                    self.auto_switch_requested = Some(false);
+                    self.auto_switch_requested = None;
                     self.lookback.push_word(&raw_word, &raw_word, true);
                     self.reset_word();
                     return (total_backspaces, out);
@@ -1335,9 +1383,8 @@ impl VietFlowEngine {
                     if is_already_raw {
                         // Bilingual smoothness: the English word needed no visible
                         // correction (e.g. "open", "report", "hello"), so keep VN
-                        // mode instead of ping-ponging V->E on every code-switched
-                        // word. Only request a mode switch when we actually had to
-                        // restore mangled text (display != raw).
+                        // mode instead of ping-ponging V->E on code-switched words.
+                        // Corrected English words keep the same mode as well.
                         self.auto_switch_requested = None;
                         self.lookback.push_word(&raw_word, &raw_word, true);
                         self.reset_word();
@@ -1346,27 +1393,27 @@ impl VietFlowEngine {
                     let bk = self.display_len;
                     let mut o = KeyText::from_str(&raw_word);
                     o.push_char(c);
-                    self.auto_switch_requested = Some(false);
+                    self.auto_switch_requested = None;
                     self.lookback.push_word(&raw_word, &raw_word, true);
                     self.reset_word();
                     return (bk, o);
                 }
             }
 
-            self.lookback.push_word(&raw_word, &display_word, false);
         }
 
         let raw_lower = raw_word.to_ascii_lowercase();
         let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(&raw_lower);
 
-        let should_restore = self.options.spell_check
-            && self.options.auto_non_vn_restore
-            && !self.buffer.is_empty()
-            && (
-                self.matches_raw_english_keyword()
-                || (is_slang && display_word != raw_word)
-                || (!self.temp_disabled && self.has_any_vietnamese_mark() && !self.is_valid_vietnamese_word())
-            );
+        let should_restore = (self.options.preserve_informal_marks && self.matches_raw_english_keyword())
+            || (self.options.spell_check
+                && self.options.auto_non_vn_restore
+                && !self.buffer.is_empty()
+                && (
+                    self.matches_raw_english_keyword()
+                    || (is_slang && display_word != raw_word)
+                    || (!self.temp_disabled && self.has_any_vietnamese_mark() && !self.is_valid_vietnamese_word())
+                ));
 
         if should_restore {
             // Restore raw keystrokes
@@ -1390,10 +1437,18 @@ impl VietFlowEngine {
             }
             out.push_char(c);
 
+            if self.options.auto_switch_by_typing {
+                self.lookback.push_word(&raw_word, &raw_word, true);
+            }
             self.reset_word();
             return (backspaces, out);
         }
 
+        if self.options.auto_switch_by_typing {
+            // Store the text that was actually committed, not an intermediate
+            // preedit that spelling recovery may have replaced.
+            self.lookback.push_word(&raw_word, &display_word, false);
+        }
         self.reset_word();
         (0, KeyText::from_char(c))
     }
@@ -1789,7 +1844,7 @@ impl VietFlowEngine {
             return false;
         }
 
-        if is_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials)
+        if is_blocked_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials)
         {
             return false;
         }
@@ -1812,7 +1867,9 @@ impl VietFlowEngine {
             for (i, slot) in self.buffer[..initial_len].iter().enumerate() {
                 initial[i] = to_lower_ascii(slot.raw_char);
             }
-            if !is_valid_initial(&initial[..initial_len]) {
+            let allowed_foreign = initial_len == 1
+                && is_foreign_initial(self.buffer[0].raw_char, self.buffer[0].lexi, &self.options.foreign_initials);
+            if !is_valid_initial(&initial[..initial_len]) && !allowed_foreign {
                 return false;
             }
             if !is_valid_initial_with_vowel(&initial[..initial_len], self.buffer[self.vowel_start].lexi) {

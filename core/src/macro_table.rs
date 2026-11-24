@@ -19,7 +19,7 @@ pub struct MacroTable {
 impl Default for MacroTable {
     fn default() -> Self {
         let mut macros = HashMap::new();
-        macros.insert("vf".to_string(), "VietFlow".to_string());
+        macros.insert("vxk".to_string(), "VietXKey".to_string());
         macros.insert("vn".to_string(), "Việt Nam".to_string());
         macros.insert(
             "chxhcnvn".to_string(),
@@ -41,7 +41,8 @@ impl MacroTable {
     }
 
     pub fn insert(&mut self, trigger: &str, replacement: &str) {
-        self.macros.insert(trigger.to_lowercase(), replacement.to_string());
+        self.macros
+            .insert(trigger.to_lowercase(), replacement.to_string());
     }
 
     pub fn remove(&mut self, trigger: &str) -> bool {
@@ -96,7 +97,9 @@ impl MacroTable {
 
             let token_start = i + 1;
             let mut token_end = token_start;
-            while token_end < chars.len() && (chars[token_end].is_alphanumeric() || chars[token_end] == '_') {
+            while token_end < chars.len()
+                && (chars[token_end].is_alphanumeric() || chars[token_end] == '_')
+            {
                 token_end += 1;
             }
 
@@ -226,6 +229,35 @@ fn format_date(fmt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vietxkey_default_expands_through_the_real_engine() {
+        use crate::{CharsetId, EngineOptions, VietFlowEngine};
+        let defaults = MacroTable::default();
+        assert_eq!(defaults.get("VXK").as_deref(), Some("VietXKey"));
+        assert!(defaults.get("vf").is_none());
+        for delimiter in [' ', '.'] {
+            let mut engine = VietFlowEngine::new(
+                EngineOptions {
+                    enable_macro: true,
+                    ..Default::default()
+                },
+                CharsetId::Unicode,
+            );
+            let mut screen = Vec::new();
+            for c in "vxk".chars().chain(std::iter::once(delimiter)) {
+                let (remove, output) = engine.process_key(c);
+                for _ in 0..remove {
+                    screen.pop();
+                }
+                screen.extend(output.chars());
+            }
+            assert_eq!(
+                screen.into_iter().collect::<String>(),
+                format!("VietXKey{delimiter}")
+            );
+        }
+    }
 
     #[test]
     fn clipboard_variable_is_left_for_the_host() {

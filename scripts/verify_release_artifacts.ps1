@@ -56,7 +56,7 @@ function Assert-Zip([string]$path, [string]$arch) {
     Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing ZIP: $path"
     $zip=[IO.Compression.ZipFile]::OpenRead($path)
     try {
-        foreach ($name in @('VietFlow.exe','vietflow_tsf.dll')) {
+        foreach ($name in @('VietFlow.exe','vietxkey_tsf.dll')) {
             $entry = $zip.GetEntry($name)
             Assert-True ($null -ne $entry) "ZIP missing $name : $path"
             $inputStream = $entry.Open()
@@ -85,9 +85,9 @@ function Record-Asset([string]$path, [string]$arch, [string]$kind) {
 foreach ($a in $archs) {
     $exe = Join-Path $DistDir "VietFlow-$a.exe"
     $dllName = switch ($a) {
-        'x86' {'vietflow_tsf_x86.dll'}
-        'arm64' {'vietflow_tsf_arm64.dll'}
-        default {'vietflow_tsf.dll'}
+        'x86' {'vietxkey_tsf_x86.dll'}
+        'arm64' {'vietxkey_tsf_arm64.dll'}
+        default {'vietxkey_tsf.dll'}
     }
     $dll = Join-Path $DistDir $dllName
     Assert-PE $exe $a

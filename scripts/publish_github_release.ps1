@@ -57,7 +57,7 @@ function Assert-PortableZip([string]$file, [string]$arch, [string]$exeDigest, [s
     try {
         foreach ($item in @(
             @{ name='VietFlow.exe'; digest=$exeDigest },
-            @{ name='vietflow_tsf.dll'; digest=$dllDigest }
+            @{ name='vietxkey_tsf.dll'; digest=$dllDigest }
         )) {
             $entry = $zip.GetEntry($item.name)
             if ($null -eq $entry) { throw "Portable ZIP missing $($item.name): $file" }
@@ -107,9 +107,9 @@ if ($LASTEXITCODE -ne 0 -or $manifest.version -ne $version -or
 $expectedPayloads = @{}
 foreach ($arch in @('x64','x86','arm64')) {
     $dll = switch ($arch) {
-        'x86' { 'vietflow_tsf_x86.dll' }
-        'arm64' { 'vietflow_tsf_arm64.dll' }
-        default { 'vietflow_tsf.dll' }
+        'x86' { 'vietxkey_tsf_x86.dll' }
+        'arm64' { 'vietxkey_tsf_arm64.dll' }
+        default { 'vietxkey_tsf.dll' }
     }
     $expectedPayloads["VietFlow-$arch.exe"] = $arch
     $expectedPayloads[$dll] = $arch
@@ -157,9 +157,9 @@ foreach ($name in $expectedPayloads.Keys) {
 # was accidentally rehashed into its manifest.
 foreach ($arch in @('x64','x86','arm64')) {
     $dllName = switch ($arch) {
-        'x86' { 'vietflow_tsf_x86.dll' }
-        'arm64' { 'vietflow_tsf_arm64.dll' }
-        default { 'vietflow_tsf.dll' }
+        'x86' { 'vietxkey_tsf_x86.dll' }
+        'arm64' { 'vietxkey_tsf_arm64.dll' }
+        default { 'vietxkey_tsf.dll' }
     }
     $exeName = "VietFlow-$arch.exe"
     Assert-PeArchFile (Join-Path $ReleasesDir $exeName) $arch

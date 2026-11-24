@@ -11,9 +11,9 @@ function Get-VietFlowReleaseInputs {
     }
     $source = (Resolve-Path -LiteralPath $DistDir).Path
     $dllName = switch ($Arch) {
-        'x86' { 'vietflow_tsf_x86.dll' }
-        'arm64' { 'vietflow_tsf_arm64.dll' }
-        default { 'vietflow_tsf.dll' }
+        'x86' { 'vietxkey_tsf_x86.dll' }
+        'arm64' { 'vietxkey_tsf_arm64.dll' }
+        default { 'vietxkey_tsf.dll' }
     }
     $paths = [ordered]@{
         ExePath = Join-Path $source "VietFlow-$Arch.exe"

@@ -21,7 +21,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::tray::to_wide;
-use crate::version::{APP_AUTHORS, APP_LICENSE, APP_NAME, APP_VERSION, GITHUB_REPO_URL};
+use crate::version::{APP_AUTHORS, APP_LICENSE, APP_NAME, APP_VERSION};
 
 static IS_CHECKING: AtomicBool = AtomicBool::new(false);
 
@@ -159,17 +159,17 @@ fn show_msg(text: &str, title: &str, flags: u32) -> i32 {
     unsafe { MessageBoxW(0 as _, wide_text.as_ptr(), wide_title.as_ptr(), flags) }
 }
 
-/// Show About dialog with app version and repository link
+/// Show About dialog with version, development credits and license.
 pub fn show_about_dialog() {
     let msg = format!(
         "{} - Bộ gõ tiếng Việt hiện đại\n\
          Phiên bản: v{}\n\
-         Bản quyền (c) 2026 {}\n\
-         Giấy phép: {}\n\n\
-         Trang chủ & Mã nguồn:\n{}",
-        APP_NAME, APP_VERSION, APP_AUTHORS, APP_LICENSE, GITHUB_REPO_URL
+         Tác giả dự án gốc: {}\n\
+         Fix lỗi và phát triển thêm bởi Minh Tâm Đoàn.\n\
+         Giấy phép: {}",
+        APP_NAME, APP_VERSION, APP_AUTHORS, APP_LICENSE
     );
-    show_msg(&msg, "Thông tin VietFlow", MB_OK | MB_ICONINFORMATION);
+    show_msg(&msg, "Thông tin VietXKey", MB_OK | MB_ICONINFORMATION);
 }
 
 struct ScopeGuard<F: FnOnce()>(Option<F>);
@@ -1025,7 +1025,7 @@ fn launch_verified_msi(info: &ReleaseInfo) -> Result<(), FetchError> {
         return Err(FetchError::new("Untrusted MSI URL"));
     }
     let destination = std::env::temp_dir().join(format!(
-        "VietFlow-update-{}-{}.msi",
+        "vietxkey-update-{}-{}.msi",
         std::process::id(),
         crate::hook::get_tick_count_64()
     ));

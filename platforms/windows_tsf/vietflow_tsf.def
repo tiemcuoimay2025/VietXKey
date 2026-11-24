@@ -1,4 +1,4 @@
-LIBRARY vietflow_tsf.dll
+LIBRARY vietxkey_tsf.dll
 
 EXPORTS
         DllGetClassObject    PRIVATE

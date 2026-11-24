@@ -145,8 +145,7 @@ pub fn to_telex_normalized_key(word: &str) -> Option<String> {
     let mut out = String::with_capacity(word.len() + 2);
     let mut tone_char: Option<char> = None;
 
-    for c in word.chars() {
-        let lower = c.to_ascii_lowercase();
+    for lower in word.chars().flat_map(char::to_lowercase) {
         // Check precomposed accents
         match lower {
             'a' | 'b' | 'c' | 'e' | 'g' | 'h' | 'i' | 'k' | 'l' | 'm' |
@@ -331,10 +330,11 @@ pub fn should_restore_to_english(
         return false;
     }
 
-    // Acronym guard (D23, D42): words with 2+ capitals (USA, EST, HDD, camelCase) stay as typed (restore to English)
-    let capital_count = raw_word.chars().filter(|c| c.is_ascii_uppercase()).count();
+    // Count visible letters, not action keys: DDaf has one capital (Đà),
+    // whereas an identifier such as getUserId still has multiple capitals.
+    let capital_count = composed_vn_word.chars().filter(|c| c.is_uppercase()).count();
     if capital_count >= 2 {
-        let all_caps = capital_count == raw_word.len();
+        let all_caps = capital_count == composed_vn_word.chars().count();
         if !all_caps {
             return true; // camelCase / PascalCase like getUserId stays as typed
         }
@@ -417,8 +417,8 @@ pub fn should_switch_to_vietnamese(
     }
 
     // Acronym / identifier check: words with 2+ capitals stay as typed unless all caps
-    let capital_count = raw_word.chars().filter(|c| c.is_ascii_uppercase()).count();
-    let all_caps = capital_count == raw_word.len();
+    let capital_count = composed_vn_word.chars().filter(|c| c.is_uppercase()).count();
+    let all_caps = capital_count == composed_vn_word.chars().count();
     if capital_count >= 2 && !all_caps {
         return false;
     }

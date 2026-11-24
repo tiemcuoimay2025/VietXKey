@@ -37,8 +37,8 @@ constexpr const wchar_t* c_szProfileStr = L"{FBA81B7C-5EAD-454F-9F81-413780E9A0B
 constexpr const wchar_t* c_szLegacyClsidStr = L"{7C2B5E10-9A31-4B8F-B623-192E48270101}";
 constexpr const wchar_t* c_szLegacyProfileStr = L"{7C2B5E11-9A31-4B8F-B623-192E48270102}";
 
-constexpr const wchar_t* c_szTextServiceName = L"VietFlow TSF Keyboard";
-constexpr const wchar_t* c_szTextServiceProfileName = L"VietFlow TSF";
+constexpr const wchar_t* c_szTextServiceName = L"VietXKey Keyboard";
+constexpr const wchar_t* c_szTextServiceProfileName = L"VietXKey";
 
 constexpr LANGID c_langidEnglishUS = 0x0409;
 constexpr LANGID c_langidVietnamese = 0x042A;

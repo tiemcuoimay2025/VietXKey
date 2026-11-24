@@ -333,6 +333,7 @@ impl Default for CustomKeymap {
 pub struct EngineOptions {
     pub method: InputMethod,
     pub free_marking: bool,
+    pub preserve_informal_marks: bool,
     pub modern_style: bool,
     pub spell_check: bool,
     pub auto_non_vn_restore: bool,
@@ -362,6 +363,7 @@ impl Default for EngineOptions {
         Self {
             method: InputMethod::Telex,
             free_marking: true,
+            preserve_informal_marks: false,
             modern_style: false,
             spell_check: true,
             auto_non_vn_restore: true,

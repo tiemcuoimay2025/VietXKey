@@ -84,6 +84,49 @@ static void NormalizeWordList(std::vector<std::string>& words) {
     words.erase(std::unique(words.begin(), words.end()), words.end());
 }
 
+bool Config::MigrateLegacyConfig(const std::string& path,
+                                 const std::vector<std::string>& candidates) {
+    try {
+        ConfigWriteLock lock;
+        if (!lock.acquired()) return false;
+        Config valid;
+        if (valid.Load(path)) return true; // new primary/backup takes precedence
+        const std::filesystem::path target(path);
+        auto backup = target; backup += L".bak";
+        const auto nonce = std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
+        auto publish = [&](const std::filesystem::path& source,
+                           const std::filesystem::path& destination) {
+            if (destination.has_parent_path()) std::filesystem::create_directories(destination.parent_path());
+            auto staged = destination; staged += L".tmp." + nonce;
+            std::error_code ec;
+            if (!CopyFileW(source.c_str(), staged.c_str(), TRUE)) return false;
+            bool ok = FlushFileToDisk(staged);
+            if (ok && std::filesystem::exists(destination)) {
+                auto preserved = destination; preserved += L".corrupt." + nonce;
+                ok = CopyFileW(destination.c_str(), preserved.c_str(), TRUE) && FlushFileToDisk(preserved);
+            }
+            if (ok) ok = MoveFileExW(staged.c_str(), destination.c_str(),
+                                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+            if (!ok) std::filesystem::remove(staged, ec);
+            return ok;
+        };
+        for (const auto& name : candidates) {
+            const std::filesystem::path candidate(name);
+            if (candidate == target) continue;
+            auto oldBackup = candidate; oldBackup += L".bak";
+            for (const auto& source : {candidate, oldBackup}) {
+                if (!valid.Load(source.string(), false)) continue;
+                const auto goodBackup = valid.Load(oldBackup.string(), false) ? oldBackup : source;
+                // Keep original bytes (including future/unknown settings) and
+                // preserve legacy files for other VietFlow installations.
+                if (!publish(goodBackup, backup)) return false;
+                return publish(source, target);
+            }
+        }
+    } catch (...) { return false; }
+    return false;
+}
+
 std::string Config::GetDefaultConfigPath() {
     wchar_t exe_path[MAX_PATH];
     bool is_installed = false;
@@ -96,9 +139,27 @@ std::string Config::GetDefaultConfigPath() {
         }
     }
 
+    auto finish = [&](const std::filesystem::path& target) {
+        std::vector<std::string> candidates;
+        candidates.push_back((target.parent_path() / "vietflow_config.json").string());
+        if (!exe_dir.empty()) {
+            candidates.push_back((exe_dir / CONFIG_FILE_NAME).string());
+            candidates.push_back((exe_dir / "vietflow_config.json").string());
+        }
+        for (int folder : {CSIDL_APPDATA, CSIDL_COMMON_APPDATA}) {
+            wchar_t base[MAX_PATH] = {};
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, folder, nullptr, 0, base))) {
+                candidates.push_back((std::filesystem::path(base) / APP_DIR_NAME / CONFIG_FILE_NAME).string());
+                candidates.push_back((std::filesystem::path(base) / "VietFlow" / "vietflow_config.json").string());
+            }
+        }
+        MigrateLegacyConfig(target.string(), candidates);
+        return target.string();
+    };
+
     if (is_installed) {
         // MSI installation mode: NEVER use Program Files.
-        // 1. Common Application Data (%ProgramData%\VietFlow\vietflow_config.json)
+        // 1. Common Application Data (%ProgramData%\VietXKey\vietxkey_config.json)
         wchar_t pd_path[MAX_PATH];
         if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, pd_path))) {
             std::filesystem::path p(pd_path);
@@ -106,40 +167,33 @@ std::string Config::GetDefaultConfigPath() {
             std::error_code ec;
             std::filesystem::create_directories(p, ec);
             auto target = p / CONFIG_FILE_NAME;
-            // Migration check: If target does not exist, check legacy Program Files
-            if (!std::filesystem::exists(target) && !exe_dir.empty()) {
-                auto legacy_pf = exe_dir / CONFIG_FILE_NAME;
-                if (std::filesystem::exists(legacy_pf)) {
-                    std::filesystem::copy_file(legacy_pf, target, std::filesystem::copy_options::skip_existing, ec);
-                }
-            }
-            return target.string();
+            return finish(target);
         }
 
-        // 2. User Application Data (%APPDATA%\VietFlow\vietflow_config.json)
+        // 2. User Application Data (%APPDATA%\VietXKey\vietxkey_config.json)
         wchar_t path[MAX_PATH];
         if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
             std::filesystem::path p(path);
             p /= APP_DIR_NAME;
             std::error_code ec;
             std::filesystem::create_directories(p, ec);
-            return (p / CONFIG_FILE_NAME).string();
+            return finish(p / CONFIG_FILE_NAME);
         }
     } else {
         // Portable mode:
         if (!exe_dir.empty()) {
             auto local_cfg = exe_dir / CONFIG_FILE_NAME;
             if (std::filesystem::exists(local_cfg)) {
-                return local_cfg.string();
+                return finish(local_cfg);
             }
             // Check write permission
-            auto test_file = exe_dir / ".w_test.tmp";
+            auto test_file = exe_dir / ".vietxkey_write_test.tmp";
             std::ofstream tf(test_file);
             if (tf.is_open()) {
                 tf.close();
                 std::error_code ec;
                 std::filesystem::remove(test_file, ec);
-                return local_cfg.string();
+                return finish(local_cfg);
             }
         }
 
@@ -150,10 +204,10 @@ std::string Config::GetDefaultConfigPath() {
             p /= APP_DIR_NAME;
             std::error_code ec;
             std::filesystem::create_directories(p, ec);
-            return (p / CONFIG_FILE_NAME).string();
+            return finish(p / CONFIG_FILE_NAME);
         }
     }
-    return CONFIG_FILE_NAME;
+    return finish(CONFIG_FILE_NAME);
 }
 
 bool Config::Load(const std::string& custom_path, bool use_backup) {
@@ -173,10 +227,12 @@ bool Config::Load(const std::string& custom_path, bool use_backup) {
         if (!ReadConfigJson(candidate, j)) return false;
         try {
         enabled = j.value("enabled", enabled);
+        dark_theme = j.value("dark_theme", dark_theme);
         method = j.value("method", method);
         charset = j.value("charset", charset);
         modern_style = j.value("modern_style", modern_style);
         free_marking = j.value("free_marking", free_marking);
+        preserve_informal_marks = j.value("preserve_informal_marks", preserve_informal_marks);
         spell_check = j.value("spell_check", spell_check);
         auto_restore = j.value("auto_restore", auto_restore);
         auto_switch_by_typing = j.value("auto_switch_by_typing", auto_switch_by_typing);
@@ -189,6 +245,7 @@ bool Config::Load(const std::string& custom_path, bool use_backup) {
         allow_macro_when_disabled = j.value("allow_macro_when_disabled", allow_macro_when_disabled);
         injection_mode = NormalizeInjectionMode(j.value("injection_mode", injection_mode));
         start_with_windows = j.value("start_with_windows", start_with_windows);
+        show_settings_on_startup = j.value("show_settings_on_startup", show_settings_on_startup);
         notification_sound = j.value("notification_sound", notification_sound);
         use_tsf = j.value("use_tsf", use_tsf);
         typing_timeout_ms = j.value("typing_timeout_ms", typing_timeout_ms);
@@ -255,6 +312,11 @@ bool Config::Load(const std::string& custom_path, bool use_backup) {
                 macros[normalized] = value.get<std::string>();
             }
         }
+        const auto legacy_macro = macros.find("vf");
+        if (legacy_macro != macros.end() && legacy_macro->second == "VietFlow") {
+            macros.erase(legacy_macro);
+            macros.try_emplace("vxk", "VietXKey");
+        }
         if (j.contains("custom_keymap") && j["custom_keymap"].is_object()) {
             const auto& ck = j["custom_keymap"];
             custom_keymap.acute = ck.value("acute", custom_keymap.acute);
@@ -313,10 +375,12 @@ bool Config::Save(const std::string& custom_path) const {
 
         json j;
         j["enabled"] = enabled;
+        j["dark_theme"] = dark_theme;
         j["method"] = method;
         j["charset"] = charset;
         j["modern_style"] = modern_style;
         j["free_marking"] = free_marking;
+        j["preserve_informal_marks"] = preserve_informal_marks;
         j["spell_check"] = spell_check;
         j["auto_restore"] = auto_restore;
         j["auto_switch_by_typing"] = auto_switch_by_typing;
@@ -329,6 +393,7 @@ bool Config::Save(const std::string& custom_path) const {
         j["allow_macro_when_disabled"] = allow_macro_when_disabled;
         j["injection_mode"] = injection_mode;
         j["start_with_windows"] = start_with_windows;
+        j["show_settings_on_startup"] = show_settings_on_startup;
         j["notification_sound"] = notification_sound;
         j["use_tsf"] = use_tsf;
         j["typing_timeout_ms"] = typing_timeout_ms;

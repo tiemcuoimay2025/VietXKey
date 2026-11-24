@@ -18,6 +18,74 @@ fn process_string(engine: &mut VietFlowEngine, input: &str) -> String {
 }
 
 #[test]
+fn mixed_english_and_vietnamese_never_disables_vietnamese_mid_word() {
+    for (input, expected) in [
+        ("was tieengs Vieetj ", "was tiếng Việt "),
+        ("this makes sense xin chaof ", "this makes sense xin chào "),
+        ("mixx tieengs Vieetj ", "mix tiếng Việt "),
+        ("tieengss xong rooif ", "tieengs xong rồi "),
+        ("was, tieengs! Vieetj? ", "was, tiếng! Việt? "),
+    ] {
+        let mut engine = VietFlowEngine::default();
+        let mut screen: Vec<char> = Vec::new();
+        for c in input.chars() {
+            let (backspaces, output) = engine.process_key(c);
+            assert_ne!(engine.take_auto_switch_request(), Some(false),
+                       "'{input}' must not disable Vietnamese at '{c}'");
+            for _ in 0..backspaces { screen.pop(); }
+            screen.extend(output.chars());
+        }
+        assert_eq!(screen.iter().collect::<String>(), expected, "{input}");
+    }
+}
+
+#[test]
+fn custom_english_keyword_keeps_the_next_word_vietnamese() {
+    let mut engine = VietFlowEngine::new(EngineOptions {
+        custom_english_keywords: vec!["props".into()],
+        ..Default::default()
+    }, CharsetId::Unicode);
+    let mut screen: Vec<char> = Vec::new();
+    for c in "props xong rooif ".chars() {
+        let (backspaces, output) = engine.process_key(c);
+        assert_ne!(engine.take_auto_switch_request(), Some(false));
+        for _ in 0..backspaces { screen.pop(); }
+        screen.extend(output.chars());
+    }
+    assert_eq!(screen.iter().collect::<String>(), "props xong rồi ");
+}
+
+#[test]
+fn bilingual_typing_preserves_vni_hybrid_and_macros() {
+    for method in [InputMethod::Vni, InputMethod::TelexVni] {
+        let mut engine = VietFlowEngine::new(EngineOptions {
+            method, ..Default::default()
+        }, CharsetId::Unicode);
+        assert_eq!(process_string(&mut engine, "was tie6ng1 Vie6t5 "), "was tiếng Việt ");
+        assert_eq!(engine.take_auto_switch_request(), None);
+    }
+    let mut engine = VietFlowEngine::new(EngineOptions {
+        enable_macro: true, ..Default::default()
+    }, CharsetId::Unicode);
+    engine.macros.insert("brb", "Be right back");
+    assert_eq!(process_string(&mut engine, "was brb tieengs Vieetj "), "was Be right back tiếng Việt ");
+    assert_eq!(engine.take_auto_switch_request(), None);
+}
+
+#[test]
+fn repeated_code_switching_and_invalid_words_keep_vietnamese_available() {
+    for typo in ["texure", "tieengss", "tiengss", "aasdf", "nghieenxx"] {
+        let mut engine = VietFlowEngine::default();
+        let input = format!("{typo} tieengs Vieetj ");
+        let output = process_string(&mut engine, &input);
+        assert!(output.ends_with(" tiếng Việt "), "{input}: {output}");
+        assert_eq!(engine.take_auto_switch_request(), None);
+    }
+    let mut engine = VietFlowEngine::default();
+    assert_eq!(process_string(&mut engine, &"was tieengs ".repeat(20)), "was tiếng ".repeat(20));
+}
+
+#[test]
 fn test_autoswitch_lookback_english_sentence() {
     let mut engine = VietFlowEngine::new(
         EngineOptions {
@@ -317,14 +385,14 @@ fn test_plain_english_word_switch_without_jitter() {
     );
 
     // Mangled English word "was" (typed as "ứa" on screen) must still restore
-    // and switch to English, since a visible correction happened.
+    // while preserving Vietnamese mode for the following word.
     engine.reset();
     let out = process_string(&mut engine, "was ");
     assert_eq!(out, "was ");
     assert_eq!(
         engine.take_auto_switch_request(),
-        Some(false),
-        "Mangled English word must restore and switch to English"
+        None,
+        "Restored English word must keep Vietnamese enabled"
     );
 }
 
@@ -355,10 +423,10 @@ fn test_custom_english_keywords_autoswitch() {
     assert_eq!(engine.take_auto_switch_request(), None);
 
     // Mangled custom keyword "props" (typed as "próp" on screen) must restore
-    // and switch to English.
+    // while keeping Vietnamese enabled.
     engine.reset();
     let out_props = process_string(&mut engine, "props ");
     assert_eq!(out_props, "props ");
-    assert_eq!(engine.take_auto_switch_request(), Some(false));
+    assert_eq!(engine.take_auto_switch_request(), None);
 }
 

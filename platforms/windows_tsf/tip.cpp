@@ -305,8 +305,14 @@ void CVietFlowTip::SyncConfig() {
         if (!m_configInitialized || cfg.auto_switch_by_typing != m_currentConfig.auto_switch_by_typing) {
             vf_engine_set_auto_switch_by_typing(m_pEngine, cfg.auto_switch_by_typing != 0);
         }
+        if (!m_configInitialized || cfg.preserve_informal_marks != m_currentConfig.preserve_informal_marks) {
+            vf_engine_set_preserve_informal_marks(m_pEngine, cfg.preserve_informal_marks != 0);
+        }
         if (!m_configInitialized || cfg.enable_macro != m_currentConfig.enable_macro) {
             vf_engine_set_enable_macro(m_pEngine, cfg.enable_macro != 0);
+        }
+        if (!m_configInitialized || cfg.foreign_initials_mask != m_currentConfig.foreign_initials_mask) {
+            vf_engine_set_foreign_initials_mask(m_pEngine, cfg.foreign_initials_mask);
         }
         m_currentConfig = cfg;
         m_configInitialized = true;

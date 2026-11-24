@@ -41,6 +41,8 @@ pub struct AppProfile {
 pub struct AppConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub dark_theme: bool,
     #[serde(default)]
     pub method: u8, // 0: Telex, 1: VNI, 2: VIQR, 3: Simple Telex, 4: Simple Telex 2, 5: Telex + VNI
     #[serde(default)]
@@ -49,6 +51,8 @@ pub struct AppConfig {
     pub modern_style: bool,
     #[serde(default = "default_true")]
     pub free_marking: bool,
+    #[serde(default)]
+    pub preserve_informal_marks: bool,
     #[serde(default = "default_true")]
     pub spell_check: bool,
     #[serde(default = "default_true")]
@@ -83,6 +87,9 @@ pub struct AppConfig {
     pub use_tsf: bool,
     #[serde(default)]
     pub start_with_windows: bool,
+    /// Open the settings child at Windows login when startup is enabled.
+    #[serde(default = "default_true")]
+    pub show_settings_on_startup: bool,
     #[serde(default)]
     pub notification_sound: bool,
     #[serde(default = "default_timeout")]
@@ -312,7 +319,7 @@ fn default_excluded_apps() -> Vec<String> {
 
 fn default_macros() -> HashMap<String, String> {
     let mut m = HashMap::new();
-    m.insert("vf".to_string(), "VietFlow".to_string());
+    m.insert("vxk".to_string(), "VietXKey".to_string());
     m.insert("vn".to_string(), "Việt Nam".to_string());
     m.insert(
         "chxhcnvn".to_string(),
@@ -325,10 +332,12 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            dark_theme: true,
             method: 0,
             charset: 0,
             modern_style: true,
             free_marking: true,
+            preserve_informal_marks: false,
             spell_check: true,
             auto_restore: true,
             fix_shift_lag: true,
@@ -342,6 +351,7 @@ impl Default for AppConfig {
             injection_mode: 0,
             use_tsf: false,
             start_with_windows: false,
+            show_settings_on_startup: true,
             notification_sound: false,
             typing_timeout_ms: default_timeout(),
             hotkey_mode: default_hotkey_mode(),
@@ -381,7 +391,7 @@ pub fn normalize_injection_mode(mode: u8) -> u8 {
 }
 
 fn is_dir_writable(dir: &std::path::Path) -> bool {
-    let test_file = dir.join(format!(".w_test_{}.tmp", std::process::id()));
+    let test_file = dir.join(format!(".vietxkey_write_test_{}.tmp", std::process::id()));
     match fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -416,13 +426,13 @@ fn get_exe_dir() -> Option<PathBuf> {
 }
 
 fn shared_common_config_path() -> Option<PathBuf> {
-    // 1. Common Application Data (%ProgramData%\VietFlow\vietflow_config.json) - persistent across MSI upgrades
+    // 1. Common Application Data (%ProgramData%\VietXKey\vietxkey_config.json) - persistent across MSI upgrades
     if let Some(p) = get_program_data_dir() {
         if (p.is_dir() || fs::create_dir_all(&p).is_ok()) && is_dir_writable(&p) {
             return Some(p.join(crate::constants::CONFIG_FILE_NAME));
         }
     }
-    // 2. Per-user Application Data (%APPDATA%\VietFlow\vietflow_config.json)
+    // 2. Per-user Application Data (%APPDATA%\VietXKey\vietxkey_config.json)
     if let Some(p) = get_app_data_dir() {
         if p.is_dir() || fs::create_dir_all(&p).is_ok() {
             return Some(p.join(crate::constants::CONFIG_FILE_NAME));
@@ -486,6 +496,43 @@ fn read_config_file(path: &Path) -> Option<AppConfig> {
 /// if the primary file was interrupted, and retain the damaged file for repair.
 fn read_config_with_backup(path: &Path) -> Option<AppConfig> {
     read_config_file(path).or_else(|| read_config_file(&backup_path(path)))
+}
+
+/// Copy validated original bytes, including unknown fields, under the shared
+/// writer lock. An existing valid new primary OR backup always wins. Legacy
+/// originals stay untouched so another VietFlow installation can still use them.
+fn migrate_legacy_config(target: &Path, candidates: &[PathBuf]) -> bool {
+    let Ok(_guard) = ConfigWriteGuard::acquire() else {
+        return false;
+    };
+    if read_config_with_backup(target).is_some() {
+        return true;
+    }
+    for candidate in candidates {
+        if candidate == target {
+            continue;
+        }
+        for source in [candidate.clone(), backup_path(candidate)] {
+            let Ok(raw) = fs::read_to_string(&source) else {
+                continue;
+            };
+            if serde_json::from_str::<AppConfig>(&raw).is_err() {
+                continue;
+            }
+            // Publish a last-known-good backup before the primary, so an
+            // interrupted migration remains recoverable on the next launch.
+            let legacy_backup = backup_path(candidate);
+            let backup_raw = fs::read_to_string(&legacy_backup)
+                .ok()
+                .filter(|text| serde_json::from_str::<AppConfig>(text).is_ok())
+                .unwrap_or_else(|| raw.clone());
+            if atomic_write_config(&backup_path(target), &backup_raw).is_err() {
+                return false;
+            }
+            return atomic_write_config(target, &raw).is_ok();
+        }
+    }
+    false
 }
 
 /// Controlled fault injection for the *test binary only*. Exit skips Rust
@@ -597,6 +644,14 @@ fn atomic_write_config(path: &Path, json: &str) -> std::io::Result<()> {
 
 impl AppConfig {
     pub fn normalize(&mut self) {
+        // Upgrade only the untouched upstream sample. Preserve custom vf/vxk
+        // mappings and an intentionally removed sample.
+        if self.macros.get("vf").map(String::as_str) == Some("VietFlow") {
+            self.macros.remove("vf");
+            self.macros
+                .entry("vxk".into())
+                .or_insert_with(|| "VietXKey".into());
+        }
         self.injection_mode = normalize_injection_mode(self.injection_mode);
         for profile in self.app_profiles.values_mut() {
             if let Some(mode) = profile.injection_mode {
@@ -605,7 +660,7 @@ impl AppConfig {
         }
     }
 
-    fn build_config_path() -> PathBuf {
+    fn select_config_path() -> PathBuf {
         if let Some(custom) = CUSTOM_CONFIG_PATH.get() {
             return custom.clone();
         }
@@ -622,38 +677,6 @@ impl AppConfig {
             } else {
                 PathBuf::from(crate::constants::CONFIG_FILE_NAME)
             };
-
-            // Migration: If target does not exist or is empty, look for legacy configs to preserve
-            let target_exists = target_path.is_file()
-                && fs::metadata(&target_path).map(|m| m.len()).unwrap_or(0) > 0;
-            if !target_exists {
-                let mut candidates = Vec::new();
-                // 1. Check legacy Program Files location
-                if let Some(exe_dir) = get_exe_dir() {
-                    candidates.push(exe_dir.join(crate::constants::CONFIG_FILE_NAME));
-                }
-                // 2. Check %APPDATA% (if target was %ProgramData%)
-                if let Some(ad) = get_app_data_dir() {
-                    candidates.push(ad.join(crate::constants::CONFIG_FILE_NAME));
-                }
-                // 3. Check %ProgramData% (if target was %APPDATA%)
-                if let Some(pd) = get_program_data_dir() {
-                    candidates.push(pd.join(crate::constants::CONFIG_FILE_NAME));
-                }
-                // 4. Check backup
-                candidates.push(target_path.with_extension("json.bak"));
-
-                for candidate in candidates {
-                    if candidate != target_path && candidate.is_file() {
-                        if let Ok(content) = fs::read_to_string(&candidate) {
-                            if serde_json::from_str::<AppConfig>(&content).is_ok() {
-                                let _ = Self::save_atomic(&target_path, &content);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
 
             return target_path;
         }
@@ -672,6 +695,33 @@ impl AppConfig {
         }
 
         PathBuf::from(crate::constants::CONFIG_FILE_NAME)
+    }
+
+    fn build_config_path() -> PathBuf {
+        let target = Self::select_config_path();
+        // Explicit --config paths belong to the caller (including isolated QA).
+        if CUSTOM_CONFIG_PATH.get().is_none() {
+            let mut candidates = Vec::new();
+            if let Some(parent) = target.parent() {
+                candidates.push(parent.join("vietflow_config.json"));
+            }
+            if let Some(exe) = get_exe_dir() {
+                candidates.push(exe.join(crate::constants::CONFIG_FILE_NAME));
+                candidates.push(exe.join("vietflow_config.json"));
+            }
+            for var in ["APPDATA", "ProgramData"] {
+                if let Some(base) = std::env::var_os(var) {
+                    let base = PathBuf::from(base);
+                    candidates.push(
+                        base.join(crate::constants::APP_DIR_NAME)
+                            .join(crate::constants::CONFIG_FILE_NAME),
+                    );
+                    candidates.push(base.join("VietFlow").join("vietflow_config.json"));
+                }
+            }
+            let _ = migrate_legacy_config(&target, &candidates);
+        }
+        target
     }
 
     /// Cached path for the hot 250 ms config-mtime check.
@@ -847,7 +897,11 @@ impl AppConfig {
 
     pub fn normalized_foreign_initials(&self) -> Vec<char> {
         let mut initials = Vec::new();
-        for c in self.foreign_initials.chars().filter(|c| c.is_alphabetic()) {
+        for c in self
+            .foreign_initials
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic())
+        {
             let lower = c.to_ascii_lowercase();
             if !initials.contains(&lower) {
                 initials.push(lower);
@@ -856,17 +910,149 @@ impl AppConfig {
                 }
             }
         }
-        if initials.is_empty() {
-            vec!['f', 'j', 'w', 'z']
-        } else {
-            initials
-        }
+        initials
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_defaults_dark_for_old_configs_and_preserves_both_choices() {
+        assert!(AppConfig::default().dark_theme);
+        assert!(serde_json::from_str::<AppConfig>("{}").unwrap().dark_theme);
+        for dark in [true, false] {
+            let config = AppConfig {dark_theme: dark, ..Default::default()};
+            let saved = serde_json::to_string(&config).unwrap();
+            assert_eq!(serde_json::from_str::<AppConfig>(&saved).unwrap().dark_theme, dark);
+        }
+    }
+
+    #[test]
+    fn free_writing_is_opt_in_and_survives_json_roundtrip() {
+        assert!(!AppConfig::default().preserve_informal_marks);
+        let old: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(!old.preserve_informal_marks);
+        for enabled in [false, true] {
+            let config = AppConfig {preserve_informal_marks: enabled, ..Default::default()};
+            let json = serde_json::to_string(&config).unwrap();
+            assert_eq!(serde_json::from_str::<AppConfig>(&json).unwrap().preserve_informal_marks, enabled);
+        }
+        assert!(serde_json::from_str::<AppConfig>(r#"{"preserve_informal_marks":"true"}"#).is_err());
+    }
+
+    #[test]
+    fn branded_macro_defaults_and_legacy_upgrade_preserve_user_edits() {
+        assert_eq!(
+            AppConfig::default().macros.get("vxk").map(String::as_str),
+            Some("VietXKey")
+        );
+        assert!(!AppConfig::default().macros.contains_key("vf"));
+        for (raw, expected_vf, expected_vxk) in [
+            (
+                r#"{"macros":{"vf":"VietFlow","mine":"keep"}}"#,
+                None,
+                Some("VietXKey"),
+            ),
+            (
+                r#"{"macros":{"vf":"custom","vxk":"my expansion","mine":"keep"}}"#,
+                Some("custom"),
+                Some("my expansion"),
+            ),
+            (
+                r#"{"macros":{"vf":"VietFlow","vxk":"my expansion","mine":"keep"}}"#,
+                None,
+                Some("my expansion"),
+            ),
+            (r#"{"macros":{"mine":"keep"}}"#, None, None),
+        ] {
+            let mut config: AppConfig = serde_json::from_str(raw).unwrap();
+            config.normalize();
+            config.normalize();
+            assert_eq!(config.macros.get("vf").map(String::as_str), expected_vf);
+            assert_eq!(config.macros.get("vxk").map(String::as_str), expected_vxk);
+            assert_eq!(config.macros.get("mine").map(String::as_str), Some("keep"));
+        }
+    }
+
+    #[test]
+    fn legacy_config_migration_preserves_data_backup_and_new_file_precedence() {
+        let dir = std::env::temp_dir().join(format!(
+            "vietxkey-migration-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(dir.clone());
+        let target = dir.join(crate::constants::CONFIG_FILE_NAME);
+        let legacy = dir.join("vietflow_config.json");
+        let raw = r#"{"method":1,"macros":{"brb":"Đà Nẵng"},"hotkey_mode":"AltZ","app_profiles":{"comet.exe":{"method":2}},"future_setting":{"keep":true}}"#;
+        let old_backup = r#"{"method":2,"macros":{"backup":"preserved"}}"#;
+        fs::write(&legacy, raw).unwrap();
+        fs::write(backup_path(&legacy), old_backup).unwrap();
+        let candidates = [legacy.clone()];
+        assert!(migrate_legacy_config(&target, &candidates));
+        assert_eq!(fs::read_to_string(&target).unwrap(), raw);
+        assert_eq!(
+            fs::read_to_string(backup_path(&target)).unwrap(),
+            old_backup
+        );
+        let migrated = read_config_file(&target).unwrap();
+        assert_eq!(migrated.hotkey_mode, "AltZ");
+        assert_eq!(migrated.macros["brb"], "Đà Nẵng");
+        assert_eq!(migrated.app_profiles["comet.exe"].method, Some(2));
+        // Migration is non-destructive and idempotent, even when the old
+        // installation subsequently writes different settings.
+        fs::write(&legacy, r#"{"method":0}"#).unwrap();
+        assert!(migrate_legacy_config(&target, &candidates));
+        assert_eq!(fs::read_to_string(&target).unwrap(), raw);
+        fs::write(&target, "broken-new-file").unwrap();
+        assert!(migrate_legacy_config(&target, &candidates));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "broken-new-file");
+        assert_eq!(read_config_with_backup(&target).unwrap().method, 2);
+        // Old backup alone recovers a semantically malformed old primary.
+        fs::remove_file(backup_path(&target)).unwrap();
+        fs::write(&legacy, r#"{"method":"invalid"}"#).unwrap();
+        assert!(migrate_legacy_config(&target, &candidates));
+        assert_eq!(fs::read_to_string(&target).unwrap(), old_backup);
+        assert_eq!(
+            fs::read_to_string(&legacy).unwrap(),
+            r#"{"method":"invalid"}"#
+        );
+        // No usable source must not create a default config or overwrite data.
+        let absent = dir.join("empty").join(crate::constants::CONFIG_FILE_NAME);
+        fs::write(backup_path(&legacy), "invalid-backup").unwrap();
+        assert!(!migrate_legacy_config(&absent, &candidates));
+        assert!(!absent.exists());
+        assert!(!backup_path(&absent).exists());
+    }
+
+    #[test]
+    fn foreign_initials_defaults_customization_and_empty_survive_config() {
+        let defaults: AppConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            defaults.normalized_foreign_initials(),
+            vec!['f', 'j', 'w', 'z']
+        );
+        let custom: AppConfig =
+            serde_json::from_str(r#"{"foreign_initials":" Zz J! Đ1 "}"#).unwrap();
+        assert_eq!(custom.normalized_foreign_initials(), vec!['z', 'j']);
+        let empty: AppConfig = serde_json::from_str(r#"{"foreign_initials":""}"#).unwrap();
+        assert!(empty.normalized_foreign_initials().is_empty());
+        let saved: AppConfig =
+            serde_json::from_str(&serde_json::to_string(&empty).unwrap()).unwrap();
+        assert!(saved.normalized_foreign_initials().is_empty());
+    }
 
     #[test]
     fn parses_profile_overrides_and_hotkey_lock() {
@@ -1439,8 +1625,8 @@ mod tests {
         let temp_dir =
             std::env::temp_dir().join(format!("vietflow_cfg_test_{}", std::process::id()));
         let _ = fs::create_dir_all(&temp_dir);
-        let cfg_path = temp_dir.join("vietflow_config.json");
-        let bak_path = temp_dir.join("vietflow_config.json.bak");
+        let cfg_path = temp_dir.join("vietxkey_config.json");
+        let bak_path = temp_dir.join("vietxkey_config.json.bak");
 
         let mut config = AppConfig {
             method: 1,

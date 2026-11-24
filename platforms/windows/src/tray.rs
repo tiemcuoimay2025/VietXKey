@@ -49,9 +49,9 @@ impl TrayIcon {
         nid.hIcon = if is_tsf_mode { icon_tsf } else { icon_v };
 
         let tip = if is_tsf_mode {
-            "VietFlow - Cài đặt [TSF IME]\0"
+            "VietXKey - Cài đặt [TSF IME]\0"
         } else {
-            "VietFlow - Bộ gõ tiếng Việt\0"
+            "VietXKey - Bộ gõ tiếng Việt\0"
         };
         let mut tip_buf = [0u16; 128];
         for (i, c) in tip.encode_utf16().take(127).enumerate() {
@@ -116,7 +116,7 @@ impl TrayIcon {
     pub unsafe fn update_status(&mut self, is_vietnamese: bool) {
         if self.is_tsf_mode {
             self.nid.hIcon = self.icon_tsf;
-            let tip_str = "VietFlow - Cài đặt [TSF IME]\0";
+            let tip_str = "VietXKey - Cài đặt [TSF IME]\0";
             let mut tip_buf = [0u16; 128];
             for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
                 tip_buf[i] = c;
@@ -129,9 +129,9 @@ impl TrayIcon {
         } else {
             self.nid.hIcon = if is_vietnamese { self.icon_v } else { self.icon_e };
             let tip_str = if is_vietnamese {
-                "VietFlow - Tiếng Việt [V]\0"
+                "VietXKey - Tiếng Việt [V]\0"
             } else {
-                "VietFlow - English [E]\0"
+                "VietXKey - English [E]\0"
             };
             let mut tip_buf = [0u16; 128];
             for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
@@ -188,7 +188,7 @@ impl TrayIcon {
                 hmenu,
                 MF_STRING,
                 IDM_SETTINGS,
-                to_wide("Bảng điều khiển VietFlow [TSF IME]").as_ptr(),
+                to_wide("Bảng điều khiển VietXKey [TSF IME]").as_ptr(),
             );
         } else {
             let toggle_text = if is_vietnamese {
@@ -342,14 +342,8 @@ impl TrayIcon {
         AppendMenuW(
             hmenu,
             MF_STRING,
-            IDM_CHECK_UPDATE,
-            to_wide("Kiểm tra cập nhật...").as_ptr(),
-        );
-        AppendMenuW(
-            hmenu,
-            MF_STRING,
             IDM_ABOUT,
-            to_wide("Thông tin (About)...").as_ptr(),
+            to_wide("Giới thiệu VietXKey...").as_ptr(),
         );
         AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
         AppendMenuW(

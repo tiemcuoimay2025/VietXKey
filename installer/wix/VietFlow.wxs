@@ -3,7 +3,7 @@
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <?ifndef TsfDllPath ?>
-  <?define TsfDllPath = "$(var.SourceDir)\dist\vietflow_tsf.dll" ?>
+  <?define TsfDllPath = "$(var.SourceDir)\dist\vietxkey_tsf.dll" ?>
   <?endif ?>
 
   <Package Name="VietFlow"
@@ -92,7 +92,7 @@
         </Component>
 
         <Component Id="TsfLibrary" Guid="8C9D18FE-4B33-4D90-951E-C9A149802B02">
-          <File Id="VietFlowTsfDll" Name="vietflow_tsf.dll" Source="$(var.TsfDllPath)" KeyPath="yes" />
+          <File Id="VietFlowTsfDll" Name="vietxkey_tsf.dll" Source="$(var.TsfDllPath)" KeyPath="yes" />
         </Component>
 
         <Component Id="MsiMarker" Guid="A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D">

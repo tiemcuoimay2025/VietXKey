@@ -2,7 +2,8 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use crate::hotkey::{modifier_bit, modifier_toggle_mask, ModifierChordTracker, CTRL, SHIFT, ALT, WIN};
 use std::ptr::null_mut;
 use std::sync::{mpsc, Mutex, OnceLock};
 use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
@@ -315,6 +316,7 @@ pub struct HookState {
     pub win_event_hook: HWINEVENTHOOK,
     pub tsf_registered: bool,
     pub held_vks: [bool; 256],
+    modifier_chord: ModifierChordTracker,
     pub foreground_pid: u32,
     pub game_detector: GameDetectionTracker,
 }
@@ -450,9 +452,15 @@ impl HookState {
             ) else {
                 return false;
             };
-            return send_atomic_batch_with_mode(backspaces, text.as_ref(), self.injection_mode);
+            return send_atomic_batch_with_mode(backspaces, text.as_ref(), self.text_injection_mode(backspaces, text.as_ref()));
         }
         true
+    }
+
+    fn text_injection_mode(&self, backspaces: usize, text: &str) -> u8 {
+        crate::inject::compatible_mode(self.injection_mode,
+            crate::process::is_chromium_browser(self.current_process.as_deref()),
+            self.engine.charset == CharsetId::Unicode, backspaces, text)
     }
 
     /// Recompute engine options and the output mode after a foreground,
@@ -482,6 +490,11 @@ impl HookState {
 }
 
 pub static STATE: Mutex<Option<HookState>> = Mutex::new(None);
+
+// Updated before the shared-state lock, including physical keys belonging to
+// shortcuts. A missed event cancels a pending modifier gesture on the next event.
+static PHYSICAL_KEYS: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
+static PHYSICAL_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 // 0: idle, 1: a modifier hotkey whose physical key-up must pass, 2: a
 // consumed hotkey whose key-up must also be suppressed. Keep this independent
@@ -556,6 +569,7 @@ fn engine_options_from_config(
         spell_check: config.spell_check,
         modern_style: config.modern_style,
         free_marking: config.free_marking,
+        preserve_informal_marks: config.preserve_informal_marks,
         auto_non_vn_restore: config.auto_restore,
         auto_switch_by_typing: config.auto_switch_by_typing,
         fix_shift_lag: config.fix_shift_lag,
@@ -662,6 +676,7 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
         return;
     }
 
+    state.modifier_chord.on_focus_change();
     let old_excluded = state.is_foreground_excluded;
     let old_non_us = state.non_us_layout;
     let old_non_unicode = state.non_unicode_window;
@@ -809,6 +824,11 @@ pub unsafe fn apply_config(config: AppConfig) {
 }
 
 pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
+    PHYSICAL_EVENT_SEQUENCE.store(0, Ordering::Release);
+    for (vk, down) in PHYSICAL_KEYS.iter().enumerate() {
+        // Mouse buttons do not produce keyboard-hook releases.
+        down.store(vk >= 8 && is_vk_down(vk as u16), Ordering::Release);
+    }
     // A reconnect/reinstall must not inherit hotkey presses from a prior hook.
     for latch in &HOTKEY_PRESS_LATCH {
         latch.store(HOTKEY_IDLE, Ordering::Release);
@@ -926,6 +946,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         win_event_hook,
         tsf_registered: crate::tsf::is_tsf_mode_active(),
         held_vks: [false; 256],
+        modifier_chord: ModifierChordTracker::default(),
         foreground_pid: initial_pid,
         game_detector: GameDetectionTracker::new(),
     });
@@ -1043,7 +1064,14 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     // after VietFlow swallowed the corresponding key-down.
     let msg = w_param as u32;
     let vk = kbd.vkCode as u16;
+    let is_key_down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
+    let is_key_up = matches!(msg, WM_KEYUP | WM_SYSKEYUP);
+    if !is_key_down && !is_key_up {
+        return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+    }
+    let event_sequence = PHYSICAL_EVENT_SEQUENCE.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
     if vk < 256 {
+        PHYSICAL_KEYS[vk as usize].store(is_key_down, Ordering::Release);
         let latch = &HOTKEY_PRESS_LATCH[vk as usize];
         if matches!(msg, WM_KEYUP | WM_SYSKEYUP) && release_hotkey_press(latch) {
             return 1;
@@ -1082,12 +1110,6 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
     let state = lock.as_mut().unwrap();
 
-    let msg = w_param as u32;
-    let is_key_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-    let is_key_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
-
-    let vk = kbd.vkCode as u16;
-
     if is_key_up && vk < 256 {
         state.held_vks[vk as usize] = false;
         state.game_detector.key_down_time[vk as usize] = 0;
@@ -1104,16 +1126,44 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     state.alt_pressed = is_vk_down(VK_MENU) || is_vk_down(VK_LMENU) || is_vk_down(VK_RMENU);
     state.win_pressed = is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
 
+    // LowLevelKeyboardProc runs BEFORE GetAsyncKeyState reflects this event.
+    // Overlay its modifier transition, keeping a held opposite-side key down.
+    match vk {
+        VK_LCONTROL => state.ctrl_pressed = is_key_down || is_vk_down(VK_RCONTROL),
+        VK_RCONTROL => state.ctrl_pressed = is_key_down || is_vk_down(VK_LCONTROL),
+        VK_CONTROL => state.ctrl_pressed = is_key_down,
+        VK_LSHIFT => state.shift_pressed = is_key_down || is_vk_down(VK_RSHIFT),
+        VK_RSHIFT => state.shift_pressed = is_key_down || is_vk_down(VK_LSHIFT),
+        VK_SHIFT => state.shift_pressed = is_key_down,
+        VK_LMENU => state.alt_pressed = is_key_down || is_vk_down(VK_RMENU),
+        VK_RMENU => state.alt_pressed = is_key_down || is_vk_down(VK_LMENU),
+        VK_MENU => state.alt_pressed = is_key_down,
+        VK_LWIN => state.win_pressed = is_key_down || is_vk_down(VK_RWIN),
+        VK_RWIN => state.win_pressed = is_key_down || is_vk_down(VK_LWIN),
+        _ => {}
+    }
+    let modifiers = u8::from(state.ctrl_pressed) * CTRL
+        | u8::from(state.shift_pressed) * SHIFT
+        | u8::from(state.alt_pressed) * ALT
+        | u8::from(state.win_pressed) * WIN;
+    let required_modifiers = modifier_toggle_mask(&state.config.hotkey_mode).unwrap_or(0);
+    let other_key_down = if modifier_bit(vk) != 0 {
+        (8..256).any(|key| modifier_bit(key as u16) == 0 && PHYSICAL_KEYS[key].load(Ordering::Acquire))
+    } else { is_key_down };
+    let modifier_toggle = state.modifier_chord.update(
+        required_modifiers, vk, is_key_down, modifiers, other_key_down, event_sequence,
+    );
+
     let hotkeys_locked = state.hotkeys_locked();
     let language_allowed =
         language_hotkey_allowed(hotkeys_locked, state.is_foreground_excluded, state.override_unlocked);
-    if is_key_down && language_allowed {
+    if (is_key_down || modifier_toggle) && language_allowed {
         let ctrl = state.ctrl_pressed;
         let alt = state.alt_pressed;
         let shift = state.shift_pressed;
         let win = state.win_pressed;
 
-        if !hotkeys_locked {
+        if is_key_down && !hotkeys_locked {
             // Configurable global settings hotkey (default: Ctrl+Shift+F5).
             if check_custom_hotkey(&state.config.hotkey_settings, ctrl, alt, shift, win, vk) {
                 // Do not open multiple settings windows when the shortcut
@@ -1127,22 +1177,12 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             }
         }
 
-        // Language toggle check
-        let is_toggle = match state.config.hotkey_mode.as_str() {
-            "CtrlShift" => {
-                (ctrl && (vk == VK_LSHIFT || vk == VK_RSHIFT))
-                    || (shift && (vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL))
-            }
-            "AltZ" => alt && (vk == b'Z' as u16),
-            "CtrlSpace" => ctrl && vk == VK_SPACE,
-            "ShiftSpace" => shift && vk == VK_SPACE,
-            "AltShift" => {
-                (alt && (vk == VK_LSHIFT || vk == VK_RSHIFT))
-                    || (shift && (vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU))
-            }
-            "CapsLock" => vk == VK_CAPITAL,
-            "WinSpace" => win && vk == VK_SPACE,
-            other => check_custom_hotkey(other, ctrl, alt, shift, win, vk),
+        // Modifier-only chords are committed on release, after ruling out
+        // any third key. Keyed shortcuts still trigger on their exact keydown.
+        let is_toggle = if required_modifiers != 0 {
+            modifier_toggle
+        } else {
+            is_key_down && check_custom_hotkey(&state.config.hotkey_mode, ctrl, alt, shift, win, vk)
         };
 
         if is_toggle {
@@ -1151,22 +1191,10 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
 
-            let is_mod = matches!(
-                vk,
-                VK_LCONTROL | VK_RCONTROL | VK_CONTROL |
-                VK_LSHIFT | VK_RSHIFT | VK_SHIFT |
-                VK_LMENU | VK_RMENU | VK_MENU |
-                VK_LWIN | VK_RWIN
-            );
-            // A held physical shortcut is one action, not a sequence of
-            // toggles. Modifier hotkeys retain the native key events; other
-            // shortcuts consume their matched down/repeat/up symmetrically.
-            if vk >= 256
-                || !claim_hotkey_press(&HOTKEY_PRESS_LATCH[vk as usize], !is_mod)
-            {
-                if is_mod {
-                    return CallNextHookEx(null_mut(), n_code, w_param, l_param);
-                }
+            let is_mod = modifier_bit(vk) != 0;
+            // The chord tracker handles modifier repeats and release order.
+            // Only keyed shortcuts swallow their trigger down/repeat/up.
+            if !is_mod && (vk >= 256 || !claim_hotkey_press(&HOTKEY_PRESS_LATCH[vk as usize], true)) {
                 return 1;
             }
 
@@ -1311,7 +1339,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                             bs,
                             text.as_str(),
                             trailing_key,
-                            state.injection_mode,
+                            state.text_injection_mode(bs, text.as_str()),
                         ) {
                             // Keep the native break and English mode unchanged.
                             // No tentative lookback result may survive rejection.
@@ -1485,34 +1513,14 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             let now_ms = unsafe { GetTickCount64() };
             let (backspaces, text) = state.engine.process_key_with_time(input_char, now_ms);
 
-            let auto_switch_req = state.engine.take_auto_switch_request();
+            // Restoring an English/invalid word must not disable Vietnamese
+            // globally. The next word starts with the same selected input mode.
+            let _ = state.engine.take_auto_switch_request();
 
-            let mut char_buf = [0u8; 4];
-            let char_str = input_char.encode_utf8(&mut char_buf);
-            let is_plain_passthrough = backspaces == 0 && text.as_str() == char_str;
-
-            // Treat AutoSwitch as a tentative engine request, not an
-            // instruction to flip language before Windows accepts the rewrite.
-            let requires_replacement =
-                !is_plain_passthrough && (backspaces > 0 || !text.is_empty());
-            let admitted = if requires_replacement {
-                if auto_switch_req == Some(false) && state.config.auto_switch_by_typing {
-                    // Language mode must not change on mere worker admission:
-                    // a queued async rewrite could later fail or be canceled
-                    // after focus switches. Require a complete synchronous
-                    // SendInput transaction for this language transition.
-                    crate::inject::send_atomic_word_break(
-                        backspaces,
-                        &text,
-                        None,
-                        state.injection_mode,
-                    )
-                } else {
-                    state.send_engine_output(backspaces, &text)
-                }
-            } else {
-                true
-            };
+            // An empty delta consumes an action key without changing text
+            // (e.g. Z on an already untoned vowel). It is not native text.
+            let requires_replacement = !is_native_text_output(input_char, backspaces, text.as_str());
+            let admitted = !requires_replacement || state.send_engine_output(backspaces, &text);
             if !admitted {
                 // The physical key still reaches Windows. Its original text,
                 // not the speculative engine output, is authoritative.
@@ -1522,34 +1530,19 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
 
-            if should_commit_auto_english_switch(
-                auto_switch_req,
-                state.config.auto_switch_by_typing,
-                admitted,
-            ) {
-                state.toggle_language();
-                let effective = state.effective_enabled();
-                crate::tsf::sync_tsf_config(&state.config, effective);
-                let tray_hwnd = state.tray_hwnd;
-                let play_sound = state.config.notification_sound;
-                PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
-                if play_sound {
-                    play_notification_sound();
-                }
-            }
-
             if requires_replacement {
                 drop(lock);
                 return 1;
-            }
-            if auto_switch_req.is_some() {
-                drop(lock);
-                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
         }
     }
 
     CallNextHookEx(null_mut(), n_code, w_param, l_param)
+}
+
+fn is_native_text_output(input: char, backspaces: usize, text: &str) -> bool {
+    let mut encoded = [0u8; 4];
+    backspaces == 0 && text == input.encode_utf8(&mut encoded)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1701,7 +1694,7 @@ fn expand_macro_only(
             crate::inject::MAX_ATOMIC_WORD_BREAK_UTF8_BYTES,
         ) {
             let output = macro_output_with_delimiter(expanded.into_owned(), delimiter);
-            crate::inject::send_atomic_word_break(backspaces, &output, break_vk, state.injection_mode)
+            crate::inject::send_atomic_word_break(backspaces, &output, break_vk, state.text_injection_mode(backspaces, &output))
         } else {
             false
         }
@@ -1813,17 +1806,6 @@ fn should_process_vietnamese_backspace(ctrl: bool, alt: bool, win: bool) -> bool
     !ctrl && !alt && !win
 }
 
-/// A speculative Vietnamese-to-English AutoSwitch is committed only after
-/// the corresponding edit was fully accepted by synchronous SendInput, never
-/// on a worker's mere promise to execute later.
-fn should_commit_auto_english_switch(
-    requested: Option<bool>,
-    enabled: bool,
-    output_admitted: bool,
-) -> bool {
-    enabled && output_admitted && requested == Some(false)
-}
-
 fn language_hotkey_allowed(locked: bool, excluded: bool, unlocked: bool) -> bool {
     !locked || (excluded && unlocked)
 }
@@ -1855,31 +1837,25 @@ unsafe fn check_custom_hotkey(
     // Direct normalized preset checks without allocating a compacted String on
     // every keydown (this function runs in the low-level hook).
     if compact_eq_ignore_ascii_case(s, "CtrlShift") {
-        return ((ctrl || is_vk_down(VK_CONTROL))
-            && (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT))
-            || ((shift || is_vk_down(VK_SHIFT))
-            && (vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL));
+        return ctrl && shift && !alt && !win && modifier_bit(vk) & (CTRL | SHIFT) != 0;
     }
     if compact_eq_ignore_ascii_case(s, "AltZ") {
-        return (alt || is_vk_down(VK_MENU)) && (vk == b'Z' as u16);
+        return alt && !ctrl && !shift && !win && vk == b'Z' as u16;
     }
     if compact_eq_ignore_ascii_case(s, "CtrlSpace") {
-        return (ctrl || is_vk_down(VK_CONTROL)) && vk == VK_SPACE;
+        return ctrl && !alt && !shift && !win && vk == VK_SPACE;
     }
     if compact_eq_ignore_ascii_case(s, "ShiftSpace") {
-        return (shift || is_vk_down(VK_SHIFT)) && vk == VK_SPACE;
+        return shift && !ctrl && !alt && !win && vk == VK_SPACE;
     }
     if compact_eq_ignore_ascii_case(s, "AltShift") {
-        return ((alt || is_vk_down(VK_MENU))
-            && (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT))
-            || ((shift || is_vk_down(VK_SHIFT))
-            && (vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU));
+        return alt && shift && !ctrl && !win && modifier_bit(vk) & (ALT | SHIFT) != 0;
     }
     if compact_eq_ignore_ascii_case(s, "CapsLock") || compact_eq_ignore_ascii_case(s, "Caps") {
-        return vk == VK_CAPITAL;
+        return !ctrl && !alt && !shift && !win && vk == VK_CAPITAL;
     }
     if compact_eq_ignore_ascii_case(s, "WinSpace") {
-        return (win || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN)) && vk == VK_SPACE;
+        return win && !ctrl && !alt && !shift && vk == VK_SPACE;
     }
 
     let mut req_ctrl = false;
@@ -1957,6 +1933,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn free_writing_config_reaches_engine_and_keeps_existing_mark_placement_choice() {
+        for enabled in [false, true] {
+            let config = AppConfig {preserve_informal_marks: enabled, free_marking: false, ..Default::default()};
+            let options = engine_options_from_config(&config, None);
+            assert_eq!(options.preserve_informal_marks, enabled);
+            assert!(!options.free_marking);
+        }
+    }
+
+    #[test]
     fn notification_requests_are_bounded_and_nonblocking() {
         // Stress many hotkey requests without spawning a worker or touching audio.
         let (tx, rx) = mpsc::sync_channel::<()>(1);
@@ -2019,6 +2005,7 @@ mod tests {
             win_event_hook: std::ptr::null_mut(),
             tsf_registered: false,
             held_vks: [false; 256],
+            modifier_chord: ModifierChordTracker::default(),
             foreground_pid: 0,
             game_detector: GameDetectionTracker::new(),
         }
@@ -2089,17 +2076,6 @@ mod tests {
             !crate::inject::send_atomic_word_break(0, &"e".repeat(33), None, 0),
             "oversized text cannot authorize a language switch"
         );
-    }
-
-    #[test]
-    fn auto_english_switch_needs_actual_rewrite_acceptance() {
-        assert!(should_commit_auto_english_switch(Some(false), true, true));
-        assert!(!should_commit_auto_english_switch(Some(false), true, false));
-        assert!(!should_commit_auto_english_switch(Some(false), false, true));
-        assert!(!should_commit_auto_english_switch(Some(true), true, true));
-        assert!(!should_commit_auto_english_switch(None, true, true));
-        // When a physical key is preserved due to SendInput failure, the
-        // language must remain Vietnamese on the next keystroke.
     }
 
     #[test]
@@ -2280,6 +2256,15 @@ mod tests {
     #[test]
     fn matches_configurable_hotkeys() {
         unsafe {
+            for (mode, ctrl, alt, shift, win, key) in [
+                ("CtrlSpace", true, false, true, false, VK_SPACE),
+                ("AltZ", true, true, false, false, b'Z' as u16),
+                ("AltShift", true, true, true, false, VK_LSHIFT),
+                ("CapsLock", true, false, false, false, VK_CAPITAL),
+                ("WinSpace", false, false, true, true, VK_SPACE),
+            ] {
+                assert!(!check_custom_hotkey(mode, ctrl, alt, shift, win, key), "extra modifiers: {mode}");
+            }
             assert!(check_custom_hotkey(
                 "Ctrl + Shift + F5",
                 true,
@@ -2312,6 +2297,31 @@ mod tests {
                 false,
                 0x5A
             ));
+        }
+    }
+
+    #[test]
+    fn native_delivery_keeps_escaped_words_and_consumes_noop_action_keys() {
+        for (input, expected) in [
+            ("WWindows ", "Windows "),
+            ("WWindows DDaf Nawngx ", "Windows Đà Nẵng "),
+            ("az ", "a "),
+            ("uoww tieengs Vieetj ", "uow tiếng Việt "),
+        ] {
+            let mut engine = VietFlowEngine::default();
+            let mut screen = String::new();
+            for c in input.chars() {
+                let (backspaces, text) = engine.process_key(c);
+                if is_native_text_output(c, backspaces, text.as_str()) {
+                    screen.push(c);
+                } else {
+                    for _ in 0..backspaces {
+                        assert!(screen.pop().is_some(), "{input:?} at {c:?}");
+                    }
+                    screen.push_str(text.as_str());
+                }
+            }
+            assert_eq!(screen, expected, "{input}");
         }
     }
 

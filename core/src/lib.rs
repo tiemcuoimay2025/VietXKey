@@ -632,7 +632,8 @@ mod tests {
             },
             CharsetId::Unicode,
         );
-        assert_eq!(process_string(&mut engine, "bas"), "bas");
+        // Additional initials do not disable normal Vietnamese consonants.
+        assert_eq!(process_string(&mut engine, "bas"), "bá");
 
         let mut default_engine = VietFlowEngine::default();
         assert_eq!(process_string(&mut default_engine, "bas"), "bá");

@@ -3,7 +3,7 @@
 #include "ipc.h"
 #include <cstring>
 
-static constexpr wchar_t CONFIG_MAP_NAME[] = L"Local\\VietFlow_TSF_Config_v2";
+static constexpr wchar_t CONFIG_MAP_NAME[] = L"Local\\VietFlow_TSF_Config_v4";
 static constexpr wchar_t FOCUS_MAP_NAME[] = L"Local\\VietFlow_TSF_Focus_v2";
 
 static TsfSharedConfig DisabledFallback() {
@@ -17,7 +17,7 @@ static TsfSharedConfig DisabledFallback() {
     c.auto_restore = 1;
     c.auto_switch_by_typing = 1;
     c.enable_macro = 1;
-    c.version = 2;
+    c.version = 4;
     return c;
 }
 
@@ -26,17 +26,18 @@ static TsfSharedConfig DisabledFallback() {
 // booleans get silently interpreted as enabled in the text processor.
 static bool IsValidTsfConfig(const TsfSharedConfig& c) {
     auto validFlag = [](uint32_t value) { return value <= 1; };
-    return c.version == 2
+    return c.version == 4
         && c.method <= 6     // core InputMethod (Telex .. UserCustom)
         && c.charset <= 4    // core CharsetId (Unicode .. VIQR)
-        && c.reserved == 0
+        && (c.foreign_initials_mask & ~VF_TSF_FOREIGN_INITIALS_VALID_MASK) == 0
         && validFlag(c.enabled)
         && validFlag(c.modern_style)
         && validFlag(c.spell_check)
         && validFlag(c.free_marking)
         && validFlag(c.auto_restore)
         && validFlag(c.auto_switch_by_typing)
-        && validFlag(c.enable_macro);
+        && validFlag(c.enable_macro)
+        && validFlag(c.preserve_informal_marks);
 }
 
 SharedConfigReader::SharedConfigReader(const wchar_t* configName, const wchar_t* focusName)

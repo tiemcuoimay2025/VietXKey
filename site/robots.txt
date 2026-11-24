@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://tiemcuoimay2025.github.io/VietXKey/sitemap.xml

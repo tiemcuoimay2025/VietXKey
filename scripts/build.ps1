@@ -289,37 +289,37 @@ foreach ($a in $archs) {
     Copy-Item $built[$a] $builtDist[$a] -Force
     if ($a -eq 'x64') {
         Copy-Item $built[$a] (Join-Path $DistDir "VietFlow-x64.exe") -Force
-        $tsfDll = Join-Path $root "platforms\windows_tsf\build\Release\vietflow_tsf.dll"
+        $tsfDll = Join-Path $root "platforms\windows_tsf\build\Release\vietxkey_tsf.dll"
         if (-not (Test-Path $tsfDll) -or (Get-PeArchitecture $tsfDll) -ne "x64") { throw "Missing or mismatched x64 TSF DLL" }
         if (Test-Path $tsfDll) {
-            $destTsf = Join-Path $DistDir "vietflow_tsf.dll"
+            $destTsf = Join-Path $DistDir "vietxkey_tsf.dll"
             try {
                 Copy-Item $tsfDll $destTsf -Force -ErrorAction Stop
             } catch {
                 # In-process COM DLL may be loaded in Windows CTF. Move locked file with unique name then copy.
-                $tempOld = Join-Path $DistDir "vietflow_tsf.dll.$([System.Guid]::NewGuid().ToString('N')).old"
+                $tempOld = Join-Path $DistDir "vietxkey_tsf.dll.$([System.Guid]::NewGuid().ToString('N')).old"
                 Move-Item -LiteralPath $destTsf -Destination $tempOld -Force -ErrorAction SilentlyContinue
                 Copy-Item $tsfDll $destTsf -Force
             }
             # Best-effort purge of stale old DLLs
-            Get-ChildItem -Path $DistDir -Filter "vietflow_tsf.dll.*.old" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem -Path $DistDir -Filter "vietxkey_tsf.dll.*.old" -File -ErrorAction SilentlyContinue | ForEach-Object {
                 Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
             }
             Write-Host "      TSF (x64): $($tsfDll) -> $($destTsf)" -ForegroundColor Green
         }
     } elseif ($a -eq 'x86') {
-        $tsfDll86 = Join-Path $root "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll"
+        $tsfDll86 = Join-Path $root "platforms\windows_tsf\build-x86\Release\vietxkey_tsf.dll"
         if (-not (Test-Path $tsfDll86) -or (Get-PeArchitecture $tsfDll86) -ne "x86") { throw "Missing or mismatched x86 TSF DLL" }
         if (Test-Path $tsfDll86) {
-            $destTsf86 = Join-Path $DistDir "vietflow_tsf_x86.dll"
+            $destTsf86 = Join-Path $DistDir "vietxkey_tsf_x86.dll"
             Copy-Item $tsfDll86 $destTsf86 -Force
             Write-Host "      TSF (x86): $($tsfDll86) -> $($destTsf86)" -ForegroundColor Green
         }
     } elseif ($a -eq 'arm64') {
-        $tsfDllArm = Join-Path $root "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll"
+        $tsfDllArm = Join-Path $root "platforms\windows_tsf\build-arm64\Release\vietxkey_tsf.dll"
         if (-not (Test-Path $tsfDllArm) -or (Get-PeArchitecture $tsfDllArm) -ne "arm64") { throw "Missing or mismatched arm64 TSF DLL" }
         if (Test-Path $tsfDllArm) {
-            $destTsfArm = Join-Path $DistDir "vietflow_tsf_arm64.dll"
+            $destTsfArm = Join-Path $DistDir "vietxkey_tsf_arm64.dll"
             Copy-Item $tsfDllArm $destTsfArm -Force
             Write-Host "      TSF (ARM64): $($tsfDllArm) -> $($destTsfArm)" -ForegroundColor Green
         }
@@ -410,7 +410,7 @@ if ($Msi) {
     }
 
     # -----------------------------------------------------------------------
-    # Portable ZIP Packaging (includes VietFlow.exe, vietflow_tsf.dll, assets)
+    # Portable ZIP Packaging (includes VietFlow.exe, vietxkey_tsf.dll, assets)
     # -----------------------------------------------------------------------
     foreach ($a in $archs) {
         $zipName = "VietFlow-win-$a-Portable.zip"
@@ -422,7 +422,7 @@ if ($Msi) {
         try {
         $sources = Get-VietFlowReleaseInputs -Arch $a -DistDir $DistDir
         Copy-Item -LiteralPath $sources.ExePath -Destination (Join-Path $tmpDir 'VietFlow.exe') -Force
-        Copy-Item -LiteralPath $sources.DllPath -Destination (Join-Path $tmpDir 'vietflow_tsf.dll') -Force
+        Copy-Item -LiteralPath $sources.DllPath -Destination (Join-Path $tmpDir 'vietxkey_tsf.dll') -Force
 
         $icon = Join-Path $root "assets\VietFlow.ico"
         if (Test-Path $icon) { Copy-Item $icon $tmpDir -Force }
@@ -440,9 +440,9 @@ if ($Msi) {
 
     foreach ($a in $archs) {
         $dllName = switch ($a) {
-            'x86' { 'vietflow_tsf_x86.dll' }
-            'arm64' { 'vietflow_tsf_arm64.dll' }
-            default { 'vietflow_tsf.dll' }
+            'x86' { 'vietxkey_tsf_x86.dll' }
+            'arm64' { 'vietxkey_tsf_arm64.dll' }
+            default { 'vietxkey_tsf.dll' }
         }
         Copy-Item -LiteralPath (Join-Path $DistDir $dllName) -Destination (Join-Path $releasesDir $dllName) -Force
     }

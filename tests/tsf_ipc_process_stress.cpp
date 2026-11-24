@@ -14,12 +14,12 @@ static int Fail(const char* message) {
 }
 
 static bool Coherent(const TsfSharedConfig& cfg) {
-    return cfg.version == 2 && cfg.reserved == 0 &&
+    return cfg.version == 4 &&
            (cfg.sequence & 1u) == 0 &&
            ((cfg.method == 3 && cfg.charset == 2 &&
-             cfg.enabled == 1 && cfg.auto_restore == 1) ||
+             cfg.enabled == 1 && cfg.auto_restore == 1 && cfg.preserve_informal_marks == 1 && cfg.foreign_initials_mask == (1u << ('z' - 'a'))) ||
             (cfg.method == 5 && cfg.charset == 4 &&
-             cfg.enabled == 0 && cfg.auto_restore == 0));
+             cfg.enabled == 0 && cfg.auto_restore == 0 && cfg.preserve_informal_marks == 0 && cfg.foreign_initials_mask == 0));
 }
 
 static volatile LONG* Field(uint32_t* p) {
@@ -43,8 +43,9 @@ static int WriteChild(const std::wstring& configName) {
         InterlockedExchange(Field(&cfg->charset), profileB ? 4 : 2);
         InterlockedExchange(Field(&cfg->enabled), profileB ? 0 : 1);
         InterlockedExchange(Field(&cfg->auto_restore), profileB ? 0 : 1);
-        InterlockedExchange(Field(&cfg->version), 2);
-        InterlockedExchange(Field(&cfg->reserved), 0);
+        InterlockedExchange(Field(&cfg->version), 4);
+        InterlockedExchange(Field(&cfg->foreign_initials_mask), profileB ? 0 : (1u << ('z' - 'a')));
+        InterlockedExchange(Field(&cfg->preserve_informal_marks), profileB ? 0 : 1);
         InterlockedExchange(Field(&cfg->sequence), odd + 1);
         if ((i & 31) == 0) Sleep(1);
     }
@@ -75,11 +76,13 @@ int main(int argc, char** argv) {
         MapViewOfFile(focusMapping, FILE_MAP_WRITE, 0, 0, sizeof(TsfFocusState)));
     if (!cfg || !focus) return Fail("parent mapping views");
     *cfg = {};
-    cfg->version = 2;
+    cfg->version = 4;
+    cfg->foreign_initials_mask = 1u << ('z' - 'a');
     cfg->method = 3;
     cfg->charset = 2;
     cfg->enabled = 1;
     cfg->auto_restore = 1;
+    cfg->preserve_informal_marks = 1;
     *focus = {};
 
     int result = 0;

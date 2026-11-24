@@ -79,7 +79,24 @@ pub fn is_foreign_initial(raw_char: char, lexi: VnLexiName, foreign_initials: &[
         return false;
     }
     let lower = raw_char.to_ascii_lowercase();
-    foreign_initials.contains(&lower)
+    foreign_initials.iter().any(|c| c.to_ascii_lowercase() == lower)
+}
+
+/// F/J/W/Z are accepted as additional initials only when configured. A lone
+/// Telex W already composed as Ư is a Vietnamese vowel, not a foreign initial.
+pub fn is_blocked_foreign_initial(raw_char: char, lexi: VnLexiName, foreign_initials: &[char]) -> bool {
+    !matches!(lexi, VnLexiName::uh | VnLexiName::Uh)
+        && matches!(raw_char.to_ascii_lowercase(), 'f' | 'j' | 'w' | 'z')
+        && !is_foreign_initial(raw_char, lexi, foreign_initials)
+}
+
+pub const FOREIGN_INITIALS_VALID_MASK: u32 = (1 << 26) - 1;
+
+/// A-Z bitmask shared with native hosts; an empty mask disables extra initials.
+pub fn foreign_initials_mask(initials: &[char]) -> u32 {
+    initials.iter().filter(|c| c.is_ascii_alphabetic()).fold(0, |mask, c| {
+        mask | (1 << (c.to_ascii_lowercase() as u32 - 'a' as u32))
+    })
 }
 
 #[cfg(test)]

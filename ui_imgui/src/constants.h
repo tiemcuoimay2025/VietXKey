@@ -27,12 +27,12 @@ inline constexpr const wchar_t* WINDOW_TITLE_DAEMON = L"VietFlowDaemon";
 inline constexpr const wchar_t* WINDOW_CLASS_UI = L"VietFlowImGuiWindow";
 
 // UI Window Titles
-inline constexpr const wchar_t* WINDOW_TITLE_CONVERT = L"VietFlow - Chuy\u1EC3n m\u00E3 v\u0103n b\u1EA3n";
-inline constexpr const wchar_t* WINDOW_TITLE_SETTINGS = L"VietFlow - B\u1EA3ng \u0111i\u1EC1u khi\u1EC3n b\u1ED9 g\u00F5 ti\u1EBFng Vi\u1EC7t";
+inline constexpr const wchar_t* WINDOW_TITLE_CONVERT = L"VietXKey - Chuy\u1EC3n m\u00E3 v\u0103n b\u1EA3n";
+inline constexpr const wchar_t* WINDOW_TITLE_SETTINGS = L"VietXKey - B\u1EA3ng \u0111i\u1EC1u khi\u1EC3n b\u1ED9 g\u00F5 ti\u1EBFng Vi\u1EC7t";
 
 // App and Config Path Identifiers
-inline constexpr const char* APP_DIR_NAME = "VietFlow";
-inline constexpr const char* CONFIG_FILE_NAME = "vietflow_config.json";
+inline constexpr const char* APP_DIR_NAME = "VietXKey";
+inline constexpr const char* CONFIG_FILE_NAME = "vietxkey_config.json";
 
 // Repository & Update URLs
 inline constexpr const char* REPO_URL = "https://github.com/KienPC1234/VietFlow";

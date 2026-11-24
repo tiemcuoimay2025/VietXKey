@@ -51,10 +51,10 @@ void VF_LogMessage(const char* function, const wchar_t* format, ...) {
     // 1. OutputDebugStringW for DebugView / Visual Studio
     OutputDebugStringW(fullLine);
 
-    // 2. Append to %TEMP%\vietflow_tsf.log
+    // 2. Append to %TEMP%\vietxkey_tsf.log
     wchar_t tempPath[MAX_PATH] = {};
     if (GetTempPathW(MAX_PATH, tempPath) > 0) {
-        std::wstring logFilePath = std::wstring(tempPath) + L"vietflow_tsf.log";
+        std::wstring logFilePath = std::wstring(tempPath) + L"vietxkey_tsf.log";
         HANDLE hFile = CreateFileW(
             logFilePath.c_str(),
             FILE_APPEND_DATA,

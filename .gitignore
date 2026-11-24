@@ -31,3 +31,11 @@ vietflow_config.json
 .vs/
 .idea/
 .vscode/
+
+# VietXKey runtime state and local browser QA
+vietxkey_config.json
+vietxkey_config.json.bak
+vietxkey_config.json.tmp.*
+vietxkey_config.json.corrupt.*
+node_modules/
+/site/.preview/

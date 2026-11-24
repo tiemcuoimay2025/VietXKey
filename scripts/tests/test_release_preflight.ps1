@@ -32,7 +32,7 @@ function Make-Zip([string]$file, [byte[]]$exe, [byte[]]$dll) {
     try {
         foreach ($part in @(
             @{name='VietFlow.exe';bytes=$exe},
-            @{name='vietflow_tsf.dll';bytes=$dll}
+            @{name='vietxkey_tsf.dll';bytes=$dll}
         )) {
             $entry = $zip.CreateEntry($part.name)
             $stream = $entry.Open()
@@ -153,9 +153,9 @@ try {
     $sums = @()
     foreach ($arch in @('x64','x86','arm64')) {
         $dll = switch ($arch) {
-            'x86' { 'vietflow_tsf_x86.dll' }
-            'arm64' { 'vietflow_tsf_arm64.dll' }
-            default { 'vietflow_tsf.dll' }
+            'x86' { 'vietxkey_tsf_x86.dll' }
+            'arm64' { 'vietxkey_tsf_arm64.dll' }
+            default { 'vietxkey_tsf.dll' }
         }
         $exe = 'VietFlow-' + $arch + '.exe'
         $msi = 'VietFlow-win-' + $arch + '.msi'

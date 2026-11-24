@@ -3,6 +3,7 @@
 
 use crate::config::AppConfig;
 use crate::tray::to_wide;
+use vietflow_core::english::{foreign_initials_mask, FOREIGN_INITIALS_VALID_MASK};
 use std::ffi::c_void;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -99,7 +100,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 // Separate owner-controlled read-mostly configuration from the untrusted
 // per-foreground focus signal. AppContainers can READ config, but can WRITE
 // only the focus map. Versioned names avoid old 56-byte v1 mappings.
-const CONFIG_MAP_NAME: &str = "Local\\VietFlow_TSF_Config_v2";
+const CONFIG_MAP_NAME: &str = "Local\\VietFlow_TSF_Config_v4";
 const FOCUS_MAP_NAME: &str = "Local\\VietFlow_TSF_Focus_v2";
 
 #[repr(C)]
@@ -116,7 +117,8 @@ pub struct TsfSharedConfig {
     pub enable_macro: u32,
     pub version: u32,
     pub sequence: u32, // even=stable, odd=writer is publishing
-    pub reserved: u32,
+    pub foreign_initials_mask: u32, // a-z allowed initials
+    pub preserve_informal_marks: u32, // v4: opt-in free-writing policy
 }
 impl Default for TsfSharedConfig {
     fn default() -> Self {
@@ -130,9 +132,10 @@ impl Default for TsfSharedConfig {
             auto_restore: 1,
             auto_switch_by_typing: 1,
             enable_macro: 1,
-            version: 2,
+            version: 4,
             sequence: 0,
-            reserved: 0,
+            foreign_initials_mask: foreign_initials_mask(&['f', 'j', 'w', 'z']),
+            preserve_informal_marks: 0,
         }
     }
 }
@@ -157,8 +160,9 @@ fn normalized_tsf_ipc_config(source: &TsfSharedConfig) -> TsfSharedConfig {
     cfg.auto_restore = flag(cfg.auto_restore);
     cfg.auto_switch_by_typing = flag(cfg.auto_switch_by_typing);
     cfg.enable_macro = flag(cfg.enable_macro);
-    cfg.version = 2;
-    cfg.reserved = 0;
+    cfg.preserve_informal_marks = flag(cfg.preserve_informal_marks);
+    cfg.version = 4;
+    cfg.foreign_initials_mask &= FOREIGN_INITIALS_VALID_MASK;
     cfg
 }
 
@@ -286,7 +290,7 @@ impl SharedConfigWriter {
                 }
             };
             let view = ptr.cast::<TsfSharedConfig>();
-            if (*view).version != 2 {
+            if (*view).version != 4 {
                 std::ptr::write(view, TsfSharedConfig::default());
             }
             let focus_view = focus_ptr.cast::<TsfFocusState>();
@@ -338,7 +342,8 @@ impl SharedConfigWriter {
                 cfg.enable_macro,
             );
             std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).version), cfg.version);
-            std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).reserved), cfg.reserved);
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).foreign_initials_mask), cfg.foreign_initials_mask);
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).preserve_informal_marks), cfg.preserve_informal_marks);
             // Publish all fields before making the sequence even again.
             std::sync::atomic::fence(Ordering::SeqCst);
             sequence.store(old.wrapping_add(2), Ordering::SeqCst);
@@ -453,9 +458,10 @@ pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
             auto_restore: if config.auto_restore { 1 } else { 0 },
             auto_switch_by_typing: if config.auto_switch_by_typing { 1 } else { 0 },
             enable_macro: if config.enable_macro { 1 } else { 0 },
-            version: 2,
+            version: 4,
             sequence: 0,
-            reserved: 0,
+            foreign_initials_mask: foreign_initials_mask(&config.normalized_foreign_initials()),
+            preserve_informal_marks: u32::from(config.preserve_informal_marks),
         };
         writer.update(&tsf_cfg);
     }
@@ -467,10 +473,10 @@ pub const PROFILE_STR: &str = "{FBA81B7C-5EAD-454F-9F81-413780E9A0BA}";
 pub const LEGACY_CLSID_STR: &str = "{7C2B5E10-9A31-4B8F-B623-192E48270101}";
 pub const LEGACY_PROFILE_STR: &str = "{7C2B5E11-9A31-4B8F-B623-192E48270102}";
 
-/// Locates the `vietflow_tsf.dll` (or legacy `vietflow_tip.dll`) file.
+/// Locates `vietxkey_tsf.dll`, with legacy VietFlow names as upgrade fallbacks.
 /// First checks the same directory as the executable, then working directory and target dirs.
 pub fn tsf_dll_path() -> Option<PathBuf> {
-    let dll_names = ["vietflow_tsf.dll", "vietflow_tip.dll"];
+    let dll_names = ["vietxkey_tsf.dll", "vietflow_tsf.dll", "vietflow_tip.dll"];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             for name in &dll_names {
@@ -525,7 +531,7 @@ pub fn tsf_dll_path() -> Option<PathBuf> {
     None
 }
 
-/// Returns true if `vietflow_tsf.dll` (or `vietflow_tip.dll`) is present on the system.
+/// Returns true if the branded TSF DLL (or a legacy upgrade fallback) is present.
 /// If false, any TSF IME options must be completely hidden from user.
 pub fn is_tsf_dll_present() -> bool {
     tsf_dll_path().is_some()
@@ -772,7 +778,7 @@ fn require_tsf_mutation_outside_test() -> Result<(), String> {
 /// Registers the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
 pub fn register_tsf() -> Result<(), String> {
     require_tsf_mutation_outside_test()?;
-    let dll = tsf_dll_path().ok_or_else(|| "vietflow_tsf.dll không tồn tại.".to_string())?;
+    let dll = tsf_dll_path().ok_or_else(|| "vietxkey_tsf.dll không tồn tại.".to_string())?;
 
     // 0. Remove legacy layouts and purge legacy HKCU entries
     call_install_layout_or_tip(
@@ -820,7 +826,7 @@ pub fn unregister_tsf_from_msi_final_uninstall() -> Result<(), String> {
     let dll = exe
         .parent()
         .ok_or_else(|| "MSI executable has no parent directory".to_string())?
-        .join("vietflow_tsf.dll");
+        .join("vietxkey_tsf.dll");
     if !dll.is_file() {
         return Err("MSI-owned TSF DLL missing beside executable".to_string());
     }
@@ -884,6 +890,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn free_writing_wire_flag_is_default_off_and_validated() {
+        assert_eq!(TsfSharedConfig::default().preserve_informal_marks, 0);
+        for flag in [0,1] {
+            let wire = normalized_tsf_ipc_config(&TsfSharedConfig {preserve_informal_marks: flag, ..Default::default()});
+            assert_eq!(wire.preserve_informal_marks, flag);
+            assert_eq!(wire.version, 4);
+        }
+    }
+
+    #[test]
+    fn foreign_initials_ipc_preserves_default_custom_and_empty_masks() {
+        let defaults = TsfSharedConfig::default();
+        assert_eq!(defaults.foreign_initials_mask, foreign_initials_mask(&['f', 'j', 'w', 'z']));
+        for initials in ["", "z", "Zz J", "fjwz"] {
+            let config = AppConfig { foreign_initials: initials.into(), ..Default::default() };
+            let expected = foreign_initials_mask(&config.normalized_foreign_initials());
+            let wire = normalized_tsf_ipc_config(&TsfSharedConfig {
+                foreign_initials_mask: expected, ..Default::default()
+            });
+            assert_eq!(wire.foreign_initials_mask, expected);
+            assert_eq!(wire.version, 4);
+        }
+        assert!(CONFIG_MAP_NAME.ends_with("_v4"));
+        assert!(FOCUS_MAP_NAME.ends_with("_v2")); // unchanged focus protocol
+    }
+
+    #[test]
     fn ipc_config_normalization_clamps_invalid_fields_without_losing_valid_enums() {
         let valid = TsfSharedConfig {
             method: 6,  // custom input method
@@ -903,8 +936,9 @@ mod tests {
         invalid.auto_restore = 9;
         invalid.auto_switch_by_typing = 100;
         invalid.enable_macro = 42;
+        invalid.preserve_informal_marks = 5;
         invalid.version = 99;
-        invalid.reserved = 0xdead_beef;
+        invalid.foreign_initials_mask = 0xdead_beef;
         let sanitized = normalized_tsf_ipc_config(&invalid);
         assert_eq!(sanitized.enabled, 0);
         assert_eq!(sanitized.method, 0);
@@ -915,8 +949,9 @@ mod tests {
         assert_eq!(sanitized.auto_restore, 0);
         assert_eq!(sanitized.auto_switch_by_typing, 0);
         assert_eq!(sanitized.enable_macro, 0);
-        assert_eq!(sanitized.version, 2);
-        assert_eq!(sanitized.reserved, 0);
+        assert_eq!(sanitized.preserve_informal_marks, 0);
+        assert_eq!(sanitized.version, 4);
+        assert_eq!(sanitized.foreign_initials_mask, 0xdead_beef & FOREIGN_INITIALS_VALID_MASK);
         // The raw config value remains available to the caller for reporting;
         // normalizing a snapshot must not change the user's settings in place.
         assert_eq!(invalid.method, u32::MAX);
@@ -1165,6 +1200,7 @@ mod tests {
                     }
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*cfg).charset), profile);
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*cfg).enabled), profile & 1);
+                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*cfg).preserve_informal_marks), profile & 1);
                     fence(Ordering::SeqCst);
                     seq.store(old.wrapping_add(2), Ordering::SeqCst);
                 }
@@ -1223,12 +1259,14 @@ mod tests {
                     unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*cfg).charset)) };
                 let enabled =
                     unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*cfg).enabled)) };
+                let preserve = unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*cfg).preserve_informal_marks)) };
                 fence(Ordering::SeqCst);
                 let after = seq.load(Ordering::SeqCst);
                 if before == after && after & 1 == 0 {
                     assert!((1..=WRITERS as u32).contains(&method));
                     assert_eq!(method, charset, "torn multi-field TSF IPC snapshot");
                     assert_eq!(enabled, method & 1, "torn TSF enabled/profile field");
+                    assert_eq!(preserve, method & 1, "torn TSF free-writing/profile field");
                     stable_reads += 1;
                 }
             }
@@ -1265,14 +1303,14 @@ mod tests {
 
     #[test]
     fn test_tsf_shared_config_layout() {
-        assert_eq!(std::mem::size_of::<TsfSharedConfig>(), 48);
+        assert_eq!(std::mem::size_of::<TsfSharedConfig>(), 52);
         assert_eq!(std::mem::size_of::<TsfFocusState>(), 16);
         let cfg = TsfSharedConfig::default();
         assert_eq!(cfg.enabled, 1);
         assert_eq!(cfg.method, 0);
         assert_eq!(cfg.auto_switch_by_typing, 1);
         assert_eq!(cfg.enable_macro, 1);
-        assert_eq!(cfg.version, 2);
+        assert_eq!(cfg.version, 4);
         assert_eq!(cfg.sequence, 0);
         assert_eq!(TsfFocusState::default().last_active_pid, 0);
     }
@@ -1319,16 +1357,20 @@ mod tests {
         let next = TsfSharedConfig {
             enabled: 0,
             method: 2,
+            preserve_informal_marks: 1,
             ..Default::default()
         };
         writer.update(&next);
         unsafe {
             assert_eq!((*writer.view).enabled, 0);
             assert_eq!((*writer.view).method, 2);
-            assert_eq!((*writer.view).version, 2);
+            assert_eq!((*writer.view).preserve_informal_marks, 1);
+            assert_eq!((*writer.view).version, 4);
             assert_eq!((*writer.view).sequence & 1, 0);
             assert_eq!((*writer.focus_view).last_active_pid, 8527);
         }
+        writer.update(&TsfSharedConfig {preserve_informal_marks: 0, ..next});
+        unsafe { assert_eq!((*writer.view).preserve_informal_marks, 0); }
     }
 
     #[test]

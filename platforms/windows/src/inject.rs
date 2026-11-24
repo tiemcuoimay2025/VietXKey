@@ -7,14 +7,17 @@ use std::sync::{mpsc, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, MapVirtualKeyExW, SendInput, VkKeyScanExW, INPUT, INPUT_0, INPUT_KEYBOARD,
-    KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
-    VK_BACK, VK_SHIFT,
+    GetAsyncKeyState, GetKeyboardLayout, MapVirtualKeyExW, SendInput, VkKeyScanExW, INPUT, INPUT_0,
+    INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
+    KEYEVENTF_UNICODE, VK_BACK, VK_LEFT, VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
 };
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 pub const VIETFLOW_MAGIC: usize = 0x56494554; // 'VIET'
+
+// Internal route, never persisted as a user-selected injection mode.
+const CHROMIUM_SELECTION_MODE: u8 = 5;
 
 #[link(name = "user32")]
 extern "system" {
@@ -39,6 +42,28 @@ const ATOMIC_CHAR_LIMIT: usize = 32;
 /// Use this BEFORE copying cached clipboard macros inside a keyboard hook.
 pub const MAX_ATOMIC_WORD_BREAK_UTF8_BYTES: usize = ATOMIC_CHAR_LIMIT * 4;
 const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + 2) * 2 + (ATOMIC_CHAR_LIMIT + 4) * 4;
+
+/// Auto mode adapts normal precomposed-Unicode replacements in Chromium.
+/// Explicit user modes and larger/paced macro dispatch keep their existing path.
+pub fn compatible_mode(
+    mode: u8,
+    chromium: bool,
+    unicode: bool,
+    backspaces: usize,
+    text: &str,
+) -> u8 {
+    if mode == 0
+        && chromium
+        && unicode
+        && backspaces > 0
+        && backspaces <= ATOMIC_BACKSPACE_LIMIT
+        && text.chars().count() <= ATOMIC_CHAR_LIMIT
+    {
+        CHROMIUM_SELECTION_MODE
+    } else {
+        mode
+    }
+}
 
 #[inline]
 pub fn create_vk_input(vk: u16, key_up: bool) -> INPUT {
@@ -313,6 +338,9 @@ pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) -> b
         return false;
     }
     let char_count = text.chars().count();
+    if mode == CHROMIUM_SELECTION_MODE {
+        return send_chromium_selection_batch(backspaces, text, None);
+    }
     let is_large_or_paced = char_count > ATOMIC_CHAR_LIMIT
         || backspaces > ATOMIC_BACKSPACE_LIMIT
         || mode == 3
@@ -457,11 +485,89 @@ fn fill_atomic_unicode_inputs(
     Some(count)
 }
 
+/// Extend Chromium's reverse-selected completion left across the old text,
+/// then DELETE it before delivering Unicode. A Unicode/IME dispatch may
+/// collapse a selection before the character is inserted; insertion alone
+/// can leave the old letters/suggestion behind. With no completion this
+/// selects and deletes only the old text. One checked SendInput batch.
+fn fill_chromium_selection_inputs(
+    backspaces: usize,
+    text: &str,
+    break_vk: Option<u16>,
+    shift_held: bool,
+    inputs: &mut [INPUT; MAX_ATOMIC_INPUTS],
+) -> Option<usize> {
+    if backspaces == 0 {
+        return fill_atomic_unicode_inputs(0, text, break_vk, inputs);
+    }
+    if backspaces > ATOMIC_BACKSPACE_LIMIT
+        || text.chars().count() > ATOMIC_CHAR_LIMIT
+        || break_vk.is_some_and(|vk| vk != 0x0d && vk != 0x09)
+    {
+        return None;
+    }
+    let mut count = 0;
+    if !shift_held {
+        inputs[count] = create_vk_input(VK_LSHIFT, false);
+        count += 1;
+    }
+    for _ in 0..backspaces {
+        inputs[count] = create_vk_input(VK_LEFT, false);
+        inputs[count + 1] = create_vk_input(VK_LEFT, true);
+        // Left is an E0 navigation key, not keypad 4. Keep that identity on
+        // both transitions, including NumLock and partial-release cleanup.
+        unsafe {
+            inputs[count].Anonymous.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+            inputs[count + 1].Anonymous.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        count += 2;
+    }
+    if !shift_held {
+        inputs[count] = create_vk_input(VK_LSHIFT, true);
+        count += 1;
+    }
+    // Do not rely on KEYEVENTF_UNICODE replacing a still-live selection.
+    // Remove it first, so caret/IME updates cannot commit the old suffix.
+    inputs[count] = create_vk_input(VK_BACK, false);
+    inputs[count + 1] = create_vk_input(VK_BACK, true);
+    count += 2;
+    let mut utf16 = [0u16; 2];
+    for c in text.chars() {
+        for unit in c.encode_utf16(&mut utf16).iter().copied() {
+            inputs[count] = create_utf16_input(unit, false);
+            inputs[count + 1] = create_utf16_input(unit, true);
+            count += 2;
+        }
+    }
+    if let Some(vk) = break_vk {
+        inputs[count] = create_vk_input(vk, false);
+        inputs[count + 1] = create_vk_input(vk, true);
+        count += 2;
+    }
+    Some(count)
+}
+
+fn send_chromium_selection_batch(backspaces: usize, text: &str, break_vk: Option<u16>) -> bool {
+    let shift_held = unsafe {
+        GetAsyncKeyState(VK_LSHIFT as i32) < 0
+            || GetAsyncKeyState(VK_RSHIFT as i32) < 0
+            || GetAsyncKeyState(VK_SHIFT as i32) < 0
+    };
+    let mut inputs = unsafe { std::mem::zeroed() };
+    let Some(count) =
+        fill_chromium_selection_inputs(backspaces, text, break_vk, shift_held, &mut inputs)
+    else {
+        return false;
+    };
+    // No fallback may replay accepted selection moves or replacement text.
+    send_checked(&inputs[..count]).0
+}
+
 /// For word-break replacement, never queue a rewrite behind the native
 /// key. Unicode and scan-code modes can use a single checked SendInput batch;
 /// paced Safe mode must preserve the original typed text rather than reorder.
 fn can_send_atomic_break(mode: u8, backspaces: usize, text: &str) -> bool {
-    (mode == 0 || mode == 1 || mode == 2)
+    (mode == 0 || mode == 1 || mode == 2 || mode == CHROMIUM_SELECTION_MODE)
         && acceptable_queued_payload(backspaces, text.len())
         && backspaces <= ATOMIC_BACKSPACE_LIMIT
         && text.chars().count() <= ATOMIC_CHAR_LIMIT
@@ -478,6 +584,9 @@ pub fn send_atomic_word_break(
 ) -> bool {
     if !can_send_atomic_break(mode, backspaces, text) {
         return false;
+    }
+    if mode == CHROMIUM_SELECTION_MODE {
+        return send_chromium_selection_batch(backspaces, text, break_vk);
     }
     if mode == 2 {
         // A single scan-code transaction is required even when a macro
@@ -703,6 +812,395 @@ fn send_safe_batch(backspaces: usize, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Chromium's inline completion is a reverse selection: anchor at the
+    // suggestion end, caret immediately after the text the user actually typed.
+    struct ChromiumField {
+        text: Vec<u16>,
+        anchor: usize,
+        caret: usize,
+        shift: bool,
+        breaks: Vec<u16>,
+    }
+
+    impl ChromiumField {
+        fn new(text: &str, caret: usize, autocomplete: bool, shift: bool) -> Self {
+            let text: Vec<u16> = text.encode_utf16().collect();
+            Self {
+                anchor: if autocomplete { text.len() } else { caret },
+                text,
+                caret,
+                shift,
+                breaks: Vec::new(),
+            }
+        }
+
+        fn apply(&mut self, inputs: &[INPUT]) {
+            for event in inputs {
+                let key = unsafe { event.Anonymous.ki };
+                let up = key.dwFlags & KEYEVENTF_KEYUP != 0;
+                if matches!(key.wVk, 0x10 | 0xa0 | 0xa1) {
+                    self.shift = !up;
+                    continue;
+                }
+                if up {
+                    continue;
+                }
+                if key.dwFlags & KEYEVENTF_UNICODE != 0 {
+                    let start = self.anchor.min(self.caret);
+                    let end = self.anchor.max(self.caret);
+                    self.text.splice(start..end, [key.wScan]);
+                    self.caret = start + 1;
+                    self.anchor = self.caret;
+                } else if key.wVk == 0x25 {
+                    // Left
+                    if self.shift {
+                        self.caret = self.caret.saturating_sub(1);
+                    } else {
+                        self.caret = if self.caret != self.anchor {
+                            self.caret.min(self.anchor)
+                        } else {
+                            self.caret.saturating_sub(1)
+                        };
+                        self.anchor = self.caret;
+                    }
+                } else if key.wVk == VK_BACK {
+                    let start = self.anchor.min(self.caret);
+                    let end = self.anchor.max(self.caret);
+                    let start = if start == end {
+                        start.saturating_sub(1)
+                    } else {
+                        start
+                    };
+                    self.text.drain(start..end);
+                    self.caret = start;
+                    self.anchor = start;
+                } else if matches!(key.wVk, 0x0d | 0x09) {
+                    self.breaks.push(key.wVk);
+                }
+            }
+        }
+
+        fn text(&self) -> String {
+            String::from_utf16(&self.text).unwrap()
+        }
+
+        // Defensive host model for the observed "ôngo" / "hoàngang":
+        // character delivery drops the highlight at its active caret before
+        // inserting Unicode. The batch must delete old text before that point.
+        fn apply_with_packet_selection_loss(&mut self, inputs: &[INPUT]) {
+            for input in inputs {
+                let key = unsafe { input.Anonymous.ki };
+                if key.dwFlags & KEYEVENTF_UNICODE != 0 && key.dwFlags & KEYEVENTF_KEYUP == 0 {
+                    self.anchor = self.caret;
+                }
+                self.apply(std::slice::from_ref(input));
+            }
+        }
+    }
+
+    #[test]
+    fn chromium_deletes_old_letters_before_unicode_can_drop_the_selection() {
+        for (original, caret, autocomplete, backspaces, replacement, expected, old_wrong) in [
+            ("o", 1, false, 1, "ô", "ô", "ôo"),
+            ("ông hoang", 9, false, 3, "àng", "ông hoàng", "ông hoàngang"),
+            (
+                "dash.cloudflare.com",
+                1,
+                true,
+                1,
+                "đ",
+                "đ",
+                "đdash.cloudflare.com",
+            ),
+            (
+                "x hoang suffix",
+                7,
+                false,
+                3,
+                "àng",
+                "x hoàng suffix",
+                "x hoàngang suffix",
+            ),
+        ] {
+            for shift in [false, true] {
+                let mut inputs = unsafe { std::mem::zeroed() };
+                let count = fill_chromium_selection_inputs(
+                    backspaces,
+                    replacement,
+                    None,
+                    shift,
+                    &mut inputs,
+                )
+                .unwrap();
+                // Omitting the explicit selection deletion reproduces the
+                // reported retained tails under the same host behavior.
+                let old_inputs: Vec<INPUT> = inputs[..count]
+                    .iter()
+                    .copied()
+                    .filter(|input| unsafe { input.Anonymous.ki.wVk } != VK_BACK)
+                    .collect();
+                let mut old = ChromiumField::new(original, caret, autocomplete, shift);
+                old.apply_with_packet_selection_loss(&old_inputs);
+                assert_eq!(old.text(), old_wrong);
+                let mut field = ChromiumField::new(original, caret, autocomplete, shift);
+                field.apply_with_packet_selection_loss(&inputs[..count]);
+                assert_eq!(field.text(), expected, "{original}, shift={shift}");
+                assert_eq!(field.shift, shift);
+            }
+        }
+    }
+
+    #[test]
+    fn chromium_navigation_is_extended_and_deletion_precedes_all_unicode() {
+        for shift in [false, true] {
+            let mut inputs = unsafe { std::mem::zeroed() };
+            let count =
+                fill_chromium_selection_inputs(3, "àng", Some(0x0d), shift, &mut inputs).unwrap();
+            let keys: Vec<_> = inputs[..count]
+                .iter()
+                .map(|e| unsafe { e.Anonymous.ki })
+                .collect();
+            let left: Vec<_> = keys.iter().filter(|k| k.wVk == VK_LEFT).collect();
+            assert_eq!(left.len(), 6);
+            assert!(left.iter().all(|k| k.dwFlags & KEYEVENTF_EXTENDEDKEY != 0));
+            let delete = keys
+                .iter()
+                .position(|k| k.wVk == VK_BACK && k.dwFlags & KEYEVENTF_KEYUP == 0)
+                .unwrap();
+            let first_unicode = keys
+                .iter()
+                .position(|k| k.dwFlags & KEYEVENTF_UNICODE != 0)
+                .unwrap();
+            assert!(delete < first_unicode);
+            assert_eq!(keys.iter().filter(|k| k.wVk == VK_BACK).count(), 2);
+        }
+    }
+
+    #[test]
+    fn chromium_full_words_survive_selection_loss_in_inputs_and_omnibox() {
+        for autocomplete in [false, true] {
+            for (input, expected) in [
+                ("oong hoangf ", "ông hoàng "),
+                ("ddaf nawngx ", "đà nẵng "),
+                ("DDaf Nawngx ", "Đà Nẵng "),
+                ("WWindows zeef ", "Windows zề "),
+            ] {
+                let mut engine = vietflow_core::VietFlowEngine::default();
+                let mut field = ChromiumField::new("", 0, false, false);
+                for c in input.chars() {
+                    let (backspaces, text) = engine.process_key(c);
+                    let mut inputs = unsafe { std::mem::zeroed() };
+                    let count = fill_chromium_selection_inputs(
+                        backspaces,
+                        text.as_str(),
+                        None,
+                        false,
+                        &mut inputs,
+                    )
+                    .unwrap();
+                    field.apply_with_packet_selection_loss(&inputs[..count]);
+                    if autocomplete && field.text() == "d" {
+                        field.text.extend("ash.cloudflare.com".encode_utf16());
+                        field.anchor = field.text.len();
+                        field.caret = 1;
+                    }
+                }
+                assert_eq!(
+                    field.text(),
+                    expected,
+                    "{input}, autocomplete={autocomplete}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chromium_inline_completion_replaces_typed_d_as_well_as_the_suggestion() {
+        let mut legacy = ChromiumField::new("Dexample.test", 1, true, false);
+        let mut old_inputs = unsafe { std::mem::zeroed() };
+        let old_count = fill_atomic_unicode_inputs(1, "Đ", None, &mut old_inputs).unwrap();
+        legacy.apply(&old_inputs[..old_count]);
+        assert_eq!(
+            legacy.text(),
+            "DĐ",
+            "the old dispatch must reproduce the reported prefix"
+        );
+        let mut field = ChromiumField::new("Dexample.test", 1, true, false);
+        let mut inputs = unsafe { std::mem::zeroed() };
+        let count = fill_chromium_selection_inputs(1, "Đ", None, false, &mut inputs).unwrap();
+        field.apply(&inputs[..count]);
+        assert_eq!(field.text(), "Đ");
+    }
+
+    #[test]
+    fn chromium_selection_preserves_prefix_suffix_held_shift_and_empty_deletions() {
+        for shift in [false, true] {
+            for (initial, caret, autocomplete, backspaces, replacement, expected) in [
+                ("D", 1, false, 1, "Đ", "Đ"),
+                ("x Dexample.test", 3, true, 1, "Đ", "x Đ"),
+                ("x D suffix", 3, false, 1, "Đ", "x Đ suffix"),
+                ("da", 2, false, 1, "à", "dà"),
+                (
+                    "prefix Windoexample.test",
+                    12,
+                    true,
+                    5,
+                    "Windo",
+                    "prefix Windo",
+                ),
+                ("x Dexample.test", 3, true, 1, "", "x "),
+                ("x D suffix", 3, false, 1, "", "x  suffix"),
+                ("Dexample.test", 1, true, 1, "Đ🦀", "Đ🦀"),
+            ] {
+                let mut field = ChromiumField::new(initial, caret, autocomplete, shift);
+                let mut inputs = unsafe { std::mem::zeroed() };
+                let count = fill_chromium_selection_inputs(
+                    backspaces,
+                    replacement,
+                    None,
+                    shift,
+                    &mut inputs,
+                )
+                .unwrap();
+                field.apply(&inputs[..count]);
+                assert_eq!(field.text(), expected, "{initial:?}, shift={shift}");
+                assert_eq!(
+                    field.shift, shift,
+                    "physical Shift must retain its original state"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chromium_complete_telex_words_work_with_and_without_inline_completion() {
+        for autocomplete in [false, true] {
+            for (input, expected) in [
+                ("DDaf Nawngx ", "Đà Nẵng "),
+                ("Ddaf Nawngx ", "Đà Nẵng "),
+                ("WWindows zeef tieengs Vieetj ", "Windows zề tiếng Việt "),
+                ("Windows DDaf Nawngx ", "Windows Đà Nẵng "),
+            ] {
+                let mut engine = vietflow_core::VietFlowEngine::default();
+                let mut field = ChromiumField::new("", 0, false, false);
+                for c in input.chars() {
+                    let (backspaces, text) = engine.process_key(c);
+                    let mut inputs = unsafe { std::mem::zeroed() };
+                    let count = fill_chromium_selection_inputs(
+                        backspaces,
+                        text.as_str(),
+                        None,
+                        false,
+                        &mut inputs,
+                    )
+                    .unwrap();
+                    field.apply(&inputs[..count]);
+                    // Model an asynchronous ASCII-only URL completion after
+                    // a native capital D. No suggestion after Vietnamese text.
+                    if autocomplete && c == 'D' && field.text().ends_with('D') {
+                        let caret = field.caret;
+                        field.text.extend("example.test".encode_utf16());
+                        field.anchor = field.text.len();
+                        field.caret = caret;
+                    }
+                }
+                assert_eq!(
+                    field.text(),
+                    expected,
+                    "{input}, autocomplete={autocomplete}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chromium_word_break_keeps_enter_tab_last_and_rejects_oversized_batches() {
+        for key in [0x0d, 0x09] {
+            let mut inputs = unsafe { std::mem::zeroed() };
+            let count = fill_chromium_selection_inputs(1, "Đà Nẵng", Some(key), false, &mut inputs)
+                .unwrap();
+            let mut field = ChromiumField::new("Dexample.test", 1, true, false);
+            field.apply(&inputs[..count]);
+            assert_eq!(field.text(), "Đà Nẵng");
+            assert_eq!(field.breaks, [key]);
+            assert_eq!(unsafe { inputs[count - 2].Anonymous.ki.wVk }, key);
+        }
+        let mut inputs = unsafe { std::mem::zeroed() };
+        assert!(fill_chromium_selection_inputs(17, "Đ", None, false, &mut inputs).is_none());
+        assert!(
+            fill_chromium_selection_inputs(1, &"x".repeat(33), None, false, &mut inputs).is_none()
+        );
+        assert!(fill_chromium_selection_inputs(1, "Đ", Some(0x25), false, &mut inputs).is_none());
+        let text = "🦀".repeat(32);
+        let count =
+            fill_chromium_selection_inputs(16, &text, Some(0x0d), false, &mut inputs).unwrap();
+        assert!(count <= MAX_ATOMIC_INPUTS);
+    }
+
+    #[test]
+    fn chromium_route_is_limited_to_auto_unicode_browser_replacements() {
+        for process in [
+            "comet.exe",
+            "COMET.EXE",
+            "chrome",
+            "msedge.exe",
+            "brave.exe",
+            "vivaldi.exe",
+            "opera.exe",
+            "chromium.exe",
+        ] {
+            assert!(
+                crate::process::is_chromium_browser(Some(process)),
+                "{process}"
+            );
+        }
+        for process in [
+            None,
+            Some("notepad.exe"),
+            Some("comet-helper.exe"),
+            Some("comet.exe.backup"),
+            Some("Đ.exe"),
+            Some(""),
+        ] {
+            assert!(!crate::process::is_chromium_browser(process));
+        }
+        assert_eq!(
+            compatible_mode(0, true, true, 1, "Đ"),
+            CHROMIUM_SELECTION_MODE
+        );
+        for mode in [1, 2, 3, 4] {
+            assert_eq!(compatible_mode(mode, true, true, 1, "Đ"), mode);
+        }
+        assert_eq!(compatible_mode(0, false, true, 1, "Đ"), 0);
+        assert_eq!(compatible_mode(0, true, false, 1, "Đ"), 0);
+        assert_eq!(compatible_mode(0, true, true, 0, "D"), 0);
+        assert_eq!(compatible_mode(0, true, true, 17, "Đ"), 0);
+        assert_eq!(compatible_mode(0, true, true, 1, &"x".repeat(33)), 0);
+    }
+
+    #[test]
+    fn chromium_partial_selection_batch_is_not_replayed_and_releases_synthetic_shift() {
+        let mut inputs = unsafe { std::mem::zeroed() };
+        let count = fill_chromium_selection_inputs(1, "Đ", None, false, &mut inputs).unwrap();
+        for accepted in 0..count {
+            let mut calls = 0;
+            let (complete, inserted) = send_checked_using(&inputs[..count], |batch| {
+                calls += 1;
+                if calls == 1 {
+                    accepted as u32
+                } else {
+                    assert!(batch
+                        .iter()
+                        .all(|event| unsafe { event.Anonymous.ki.dwFlags } & KEYEVENTF_KEYUP != 0));
+                    batch.len() as u32
+                }
+            });
+            assert!(!complete);
+            assert_eq!(inserted, accepted as u32);
+            assert!(calls <= 2);
+        }
+    }
 
     #[test]
     fn unicode_scalar_builder_keeps_surrogate_pairs_and_balanced_events() {

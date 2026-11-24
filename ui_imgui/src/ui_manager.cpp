@@ -1,6 +1,7 @@
 #include "ui_manager.h"
 #include "constants.h"
 #include "theme.h"
+#include "donation_qr.h"
 #include <imgui.h>
 #include <windows.h>
 #include <commdlg.h>
@@ -130,7 +131,7 @@ static std::string PickIconFile(const std::string& current) {
 static std::string PickMacroFile(bool save) {
     OPENFILENAMEW ofn = { sizeof(ofn) };
     wchar_t file[MAX_PATH] = { 0 };
-    if (save) wcscpy_s(file, L"vietflow-macros.tsv");
+    if (save) wcscpy_s(file, L"vietxkey-macros.tsv");
     ofn.lpstrFile = file;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrFilter = L"Danh sách gõ tắt (*.tsv;*.txt;*.csv)\0*.tsv;*.txt;*.csv\0Tất cả tập tin (*.*)\0*.*\0";
@@ -299,6 +300,8 @@ UiManager::UiManager(const std::string& config_path, bool convert_mode, void* hw
       is_running_as_admin_(CheckIsProcessElevated()) {
     (void)convert_mode;
     config_.Load(config_path_);
+    SetDarkTheme(config_.dark_theme);
+    ApplyTheme(UiScale());
     SyncTextBuffersFromConfig();
     english_defaults_ = LoadDefaultEnglishKeywords();
     SyncCustomKeymapBuffersFromConfig();
@@ -475,7 +478,7 @@ void UiManager::ResetToDefaults() {
 }
 
 static void BeginPageScroll() {
-    // Keep the tab bar and the Save button fixed; only the page body scrolls.
+    // Keep navigation and the Save button fixed; only the page body scrolls.
     // Without this, long macro/exclusion lists grow the outer window and push
     // the header off-screen.
     ImGui::BeginChild("##PageScroll", ImVec2(0.0f, 0.0f), false);
@@ -531,13 +534,73 @@ static void LabelHelp(const char* label, const char* help) {
 
 static void SectionHeaderHelp(const char* title, const char* help) {
     ImGui::Spacing();
+    ImGui::PushFont(HeadingFont(), TextPx(18));
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(title);
+    ImGui::PopFont();
     SameLineHelp(help);
     ImGui::Separator();
 }
 
+
+static void UiText(ImDrawList* draw, ImVec2 pos, const char* text, float size,
+                   ImU32 color, bool bold = false) {
+    draw->AddText(bold ? HeadingFont() : ImGui::GetFont(), TextPx(size), pos, ImGui::GetColorU32(ThemeTextColor(color)), text);
+}
+
+static void BeginSurface(const char* id, ImVec2 size) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(ThemeColor(IM_COL32(31,36,42,250),IM_COL32(255,255,253,245))));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(20), Px(18)));
+    ImGui::BeginChild(id, size, ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+}
+
+static void EndSurface() {
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
+static bool SettingToggle(const char* title, const char* description, bool* value) {
+    ImGui::PushID(title);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    UiText(draw, p, title, 16, IM_COL32(230, 236, 221, 255), true);
+    UiText(draw, ImVec2(p.x, p.y + Px(25)), description, 13, IM_COL32(153, 166, 141, 255));
+    ImGui::SetCursorScreenPos(ImVec2(p.x + width - Px(44), p.y + Px(8)));
+    const bool changed = ToggleSwitch("##toggle", value);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s: %s", title, *value ? "Bật" : "Tắt");
+    ImGui::SetCursorScreenPos(p);
+    ImGui::Dummy(ImVec2(width, Px(58)));
+    ImGui::PopID();
+    return changed;
+}
+
+static bool SummaryCard(const char* id, const char* label, size_t count, const char* detail,
+                        const char* icon, ImVec2 size) {
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(ThemeColor(IM_COL32(31,36,42,250),IM_COL32(255,255,253,245))));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::ColorConvertU32ToFloat4(ThemeColor(IM_COL32(43,50,56,255),IM_COL32(238,245,229,255))));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Px(16));
+    const bool clicked = ImGui::Button(id, size);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    char value[24];
+    snprintf(value, sizeof(value), "%zu", count);
+    UiText(draw, ImVec2(p.x + Px(18), p.y + Px(15)), label, 11, IM_COL32(157, 173, 140, 255), true);
+    UiText(draw, ImVec2(p.x + Px(18), p.y + Px(35)), value, 28, IM_COL32(233, 240, 220, 255), true);
+    UiText(draw, ImVec2(p.x + Px(18), p.y + Px(102)), detail, 13, IM_COL32(153, 166, 141, 255));
+    UiText(draw, ImVec2(p.x + size.x - Px(37), p.y + Px(40)), icon, 19, IM_COL32(166, 190, 116, 255));
+    return clicked;
+}
+
 void UiManager::Render() {
+    if (IsDarkTheme() != config_.dark_theme) {
+        SetDarkTheme(config_.dark_theme);
+        ApplyTheme(UiScale());
+    }
     ImGuiIO& io = ImGui::GetIO();
     if (saved_toast_timer_ > 0.0f) {
         saved_toast_timer_ -= io.DeltaTime;
@@ -575,116 +638,149 @@ void UiManager::Render() {
                                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
                                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(16.0f), Px(12.0f)));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
     ImGui::Begin("VietFlowMainWindow", nullptr, window_flags);
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(2);
+    DrawAppBackground(ImGui::GetWindowDrawList(), viewport->WorkPos,
+        ImVec2(viewport->WorkPos.x+viewport->WorkSize.x,viewport->WorkPos.y+viewport->WorkSize.y));
 
-    // Top Header: Title + Status + Action buttons
-    // Global ESC key to save & dismiss window (when not actively capturing hotkeys or inside modal popups)
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        if (!recording_hotkey_ && recording_hotkey_target_ == 0 && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
-            SaveConfig();
-            if (hwnd_) {
-                PostMessageW((HWND)hwnd_, WM_CLOSE, 0, 0);
-            }
-        }
-    }
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(NF_KEYBOARD " VietFlow");
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.60f, 0.70f, 1.0f));
-    ImGui::TextUnformatted("- Bộ gõ tiếng Việt thế hệ mới");
-    ImGui::PopStyleColor();
-
-    const char* save_btn_label = NF_SAVE " Lưu & Đóng (Esc)";
-    float save_btn_w = ImGui::CalcTextSize(save_btn_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
-
-    const char* reset_btn_label = NF_CONVERT " Khôi phục cài đặt gốc";
-    float reset_btn_w = ImGui::CalcTextSize(reset_btn_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
-
-    float spacing = Px(8.0f);
-    float total_btns_w = save_btn_w + spacing + reset_btn_w;
-    float start_x = ImGui::GetWindowWidth() - total_btns_w - ImGui::GetStyle().WindowPadding.x;
-
-    if (saved_toast_timer_ > 0.0f) {
-        const char* saved_label = NF_CHECK " Đã lưu cài đặt";
-        float saved_w = ImGui::CalcTextSize(saved_label).x + Px(12.0f);
-        ImGui::SameLine(start_x - saved_w - Px(12.0f));
-        ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.45f, 1.00f), "%s", saved_label);
-        ImGui::SameLine(start_x);
-    } else {
-        ImGui::SameLine(start_x);
-    }
-
-    // Reset button on the LEFT of Save & Apply
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.20f, 0.25f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.32f, 0.40f, 1.0f));
-    if (ImGui::Button(reset_btn_label, ImVec2(reset_btn_w, Px(28.0f)))) {
-        ResetToDefaults();
-    }
-    ImGui::PopStyleColor(2);
-
-    ImGui::SameLine(0.0f, spacing);
-
-    // Save & Apply button: saves configuration and dismisses UI window automatically
-    if (ImGui::Button(save_btn_label, ImVec2(save_btn_w, Px(28.0f)))) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !recording_hotkey_ && recording_hotkey_target_ == 0 &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
         SaveConfig();
-        if (hwnd_) {
-            PostMessageW((HWND)hwnd_, WM_CLOSE, 0, 0);
-        }
+        if (hwnd_) PostMessageW((HWND)hwnd_, WM_CLOSE, 0, 0);
     }
 
-    ImGui::Spacing();
+    struct PageInfo { Page page; const char* nav; const char* title; const char* subtitle; };
+    static const PageInfo pages[] = {
+        {Page::Overview, NF_COG "   Tổng quan", "Tổng quan", "Một không gian gõ, theo cách của bạn."},
+        {Page::Typing, NF_KEYBOARD "   Gõ tiếng Việt", "Gõ tiếng Việt", "Điều chỉnh cách gõ và thói quen ngôn ngữ."},
+        {Page::Shortcuts, NF_EXCHANGE "   Phím tắt", "Phím tắt", "Chuyển ngôn ngữ và mở VietXKey thật nhanh."},
+        {Page::Macros, NF_BOLT "   Gõ tắt", "Gõ tắt", "Ít thao tác hơn, trọn vẹn ý tưởng hơn."},
+        {Page::Apps, NF_GAMEPAD "   Ứng dụng", "Ứng dụng", "Thiết lập bộ gõ cho từng không gian làm việc."},
+        {Page::TrayIcon, NF_PAINT "   Biểu tượng", "Biểu tượng", "Một dấu ấn nhỏ mang phong cách của bạn."},
+        {Page::About, NF_INFO "   Giới thiệu", "Giới thiệu", "Một bộ gõ thân thuộc. Một diện mạo của riêng bạn."}
+    };
 
-    // Native ImGui TabBar Navigation (6 clean tabs)
-    ImGuiTabBarFlags tab_bar_flags = ImGuiTabBarFlags_FittingPolicyScroll;
-    if (ImGui::BeginTabBar("MainTabs", tab_bar_flags)) {
-        if (ImGui::BeginTabItem(NF_COG " Tổng quan")) {
-            BeginPageScroll();
-            PageOverview();
-            EndPageScroll();
-            ImGui::EndTabItem();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float sidebar_width = Px(244);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    GradientPanel(draw, origin, ImVec2(origin.x + sidebar_width, origin.y + viewport->WorkSize.y),
+                  ThemeColor(IM_COL32(28,33,39,245),IM_COL32(246,249,240,245)), ThemeColor(IM_COL32(22,27,32,250),IM_COL32(232,239,222,250)), 0);
+    draw->AddLine(ImVec2(origin.x + sidebar_width, origin.y),
+                  ImVec2(origin.x + sidebar_width, origin.y + viewport->WorkSize.y), ThemeColor(IM_COL32(50,60,61,255),IM_COL32(190,205,174,255)));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(16), Px(24)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Px(8), Px(4)));
+    ImGui::BeginChild("##Sidebar", ImVec2(sidebar_width, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const ImVec2 brand = ImGui::GetCursorScreenPos();
+    draw = ImGui::GetWindowDrawList();
+    DrawBrandKeycap(draw, brand, Px(38));
+    UiText(draw, ImVec2(brand.x + Px(49), brand.y + Px(1)), "VietXKey", 24, IM_COL32(237, 243, 226, 255), true);
+    UiText(draw, ImVec2(brand.x + Px(50), brand.y + Px(36)), "GÕ THEO CÁCH BẠN", 9, IM_COL32(153, 174, 130, 255), true);
+    ImGui::Dummy(ImVec2(0, Px(84)));
+    const float navigation_height = (std::max)(Px(120), ImGui::GetContentRegionAvail().y - Px(170));
+    ImGui::BeginChild("##Navigation", ImVec2(0, navigation_height));
+    ImGui::PushFont(HeadingFont(), TextPx(10));
+    ImGui::TextDisabled("KHÔNG GIAN LÀM VIỆC");
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, Px(8)));
+    for (int i = 0; i < IM_ARRAYSIZE(pages); ++i) {
+        if (i == 5) {
+            ImGui::Dummy(ImVec2(0, Px(20)));
+            ImGui::PushFont(HeadingFont(), TextPx(10));
+            ImGui::TextDisabled("CÁ NHÂN HÓA");
+            ImGui::PopFont();
+            ImGui::Dummy(ImVec2(0, Px(8)));
         }
-
-        if (ImGui::BeginTabItem(NF_KEYBOARD " Gõ tiếng Việt")) {
-            BeginPageScroll();
-            PageTyping();
-            EndPageScroll();
-            ImGui::EndTabItem();
+        if (NavItem(pages[i].nav, current_page_ == pages[i].page)) {
+            // Complete a shortcut capture before leaving its page.
+            recording_hotkey_ = false;
+            recording_hotkey_target_ = 0;
+            current_page_ = pages[i].page;
         }
-
-        if (ImGui::BeginTabItem(NF_BOLT " Gõ tắt")) {
-            BeginPageScroll();
-            PageMacros();
-            EndPageScroll();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem(NF_GAMEPAD "  Ứng dụng")) {
-            BeginPageScroll();
-            PageApps();
-            EndPageScroll();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem(NF_PAINT " Biểu tượng")) {
-            BeginPageScroll();
-            PageTrayIcon();
-            EndPageScroll();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem(NF_INFO " Thông tin")) {
-            BeginPageScroll();
-            PageAbout();
-            EndPageScroll();
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
     }
+    ImGui::EndChild();
+    const float footer_y = ImGui::GetWindowHeight() - Px(170);
+    ImGui::SetCursorPosY((std::max)(ImGui::GetCursorPosY(), footer_y));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, Px(9)));
+    ImGui::PushFont(HeadingFont(), TextPx(10));
+    ImGui::TextDisabled("NGÔN NGỮ HIỆN TẠI");
+    ImGui::PopFont();
+    ImGui::BeginDisabled(TsfActive());
+    const char* language_label = TsfActive() ? "Do Windows quản lý" : (config_.enabled ? "Tiếng Việt    /    VI" : "English    /    EN");
+    if (ImGui::Button(language_label, ImVec2(-1, Px(36)))) {
+        config_.enabled = !config_.enabled;
+        SaveConfig();
+        if (config_.notification_sound) vf_play_notification_sound();
+    }
+    ImGui::EndDisabled();
+    if (TsfActive() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Windows quản lý ngôn ngữ. Dùng Win + Space để chuyển bộ gõ.");
+    if (ImGui::Button("Khôi phục cài đặt", ImVec2(-1, Px(36)))) ImGui::OpenPopup("Khôi phục?");
+    if (ImGui::BeginPopupModal("Khôi phục?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Đưa các thiết lập về mặc định của VietXKey?");
+        if (ImGui::Button("Khôi phục", ImVec2(Px(130), 0))) { ResetToDefaults(); ImGui::CloseCurrentPopup(); }
+        ImGui::SameLine();
+        if (ImGui::Button("Giữ cài đặt", ImVec2(Px(130), 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::PushFont(nullptr, TextPx(11));
+    ImGui::TextDisabled("VietXKey  %s", VIETFLOW_VERSION);
+    ImGui::PopFont();
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
 
+    ImGui::SameLine(0, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(28), Px(24)));
+    ImGui::BeginChild("##Workspace", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const PageInfo* active = &pages[0];
+    for (const auto& info : pages) if (info.page == current_page_) active = &info;
+    const ImVec2 header = ImGui::GetCursorScreenPos();
+    const float content_width = ImGui::GetContentRegionAvail().x;
+    draw = ImGui::GetWindowDrawList();
+    UiText(draw, header, active->title, 26, IM_COL32(237, 243, 226, 255), true);
+    UiText(draw, ImVec2(header.x, header.y + Px(37)), active->subtitle, 13, IM_COL32(153, 166, 141, 255));
+    ImGui::SetCursorScreenPos(ImVec2(header.x + content_width - Px(252), header.y + Px(4)));
+    ImGui::PushFont(HeadingFont(), TextPx(12));
+    if (ImGui::Button(config_.dark_theme ? "Nền sáng" : "Nền tối", ImVec2(Px(100),Px(36)))) {
+        config_.dark_theme = !config_.dark_theme;
+        SaveConfig();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Đổi giao diện sáng / tối. Lựa chọn được tự động lưu.");
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(header.x + content_width - Px(140), header.y + Px(4)));
+    ImGui::PushFont(HeadingFont(), TextPx(14));
+    if (ImGui::Button(NF_CHECK "  Lưu & đóng", ImVec2(Px(140), Px(36)))) {
+        SaveConfig();
+        if (hwnd_) PostMessageW((HWND)hwnd_, WM_CLOSE, 0, 0);
+    }
+    ImGui::PopFont();
+    const char* status = saved_toast_timer_ > 0 ? "Đã lưu thay đổi" : (TsfActive() ? "Windows quản lý" : "Tự động lưu");
+    UiText(draw, ImVec2(header.x + content_width - Px(140), header.y + Px(46)), status, 10, IM_COL32(157, 180, 128, 255));
+    ImGui::SetCursorScreenPos(ImVec2(header.x, header.y + Px(78)));
+
+    // Each page keeps its own scroll position; navigation and Save stay fixed.
+    ImGui::PushID(static_cast<int>(current_page_));
+    BeginPageScroll();
+    switch (current_page_) {
+        case Page::Overview: PageOverview(); break;
+        case Page::Typing: PageTyping(); break;
+        case Page::Shortcuts: PageShortcuts(); break;
+        case Page::Macros: PageMacros(); break;
+        case Page::Apps: PageApps(); break;
+        case Page::TrayIcon: PageTrayIcon(); break;
+        case Page::About: PageAbout(); break;
+    }
+    EndPageScroll();
+    ImGui::PopID();
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    RenderDonationPopup();
     ImGui::End();
 }
 
@@ -710,109 +806,126 @@ static std::string FormatHotkeyLabel(const std::string& mode) {
     return result;
 }
 
+
 void UiManager::PageOverview() {
-    SectionHeader("Bộ gõ & Bảng mã");
+    const ImVec2 hero = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 hero_max(hero.x + width, hero.y + Px(180));
+    GradientPanel(draw, hero, hero_max, ThemeColor(IM_COL32(32,40,45,255),IM_COL32(254,255,250,255)), ThemeColor(IM_COL32(49,60,58,255),IM_COL32(225,237,209,255)), Px(18));
+    draw->PushClipRect(hero, hero_max, true);
+    draw->AddCircle(ImVec2(hero_max.x - Px(50), hero.y + Px(158)), Px(150), IM_COL32(207, 220, 160, 22), 80, Px(1));
+    draw->AddCircle(ImVec2(hero_max.x - Px(50), hero.y + Px(158)), Px(124), IM_COL32(207, 220, 160, 16), 80, Px(1));
+    UiText(draw, ImVec2(hero.x + Px(26), hero.y + Px(22)), "TIẾNG VIỆT, THẬT TỰ NHIÊN", 10, IM_COL32(205, 220, 177, 255), true);
+    UiText(draw, ImVec2(hero.x + Px(26), hero.y + Px(47)), "Để ý tưởng", 32, IM_COL32(247, 249, 236, 255), true);
+    UiText(draw, ImVec2(hero.x + Px(26), hero.y + Px(94)), "chảy thành lời.", 32, IM_COL32(247, 249, 236, 255), true);
+    UiText(draw, ImVec2(hero.x + Px(26), hero.y + Px(151)), "Một nhịp gõ nhẹ. Một dòng suy nghĩ liền mạch.", 13, IM_COL32(210, 224, 182, 255));
+    const char* glyphs[] = {"ă", "â", "đ"};
+    const float tiles_x = hero_max.x - Px(228);
+    for (int i = 0; i < 3; ++i) {
+        const float x = tiles_x + Px(62.0f * i);
+        const float y = hero.y + Px(i == 1 ? 40 : 51);
+        draw->AddRectFilled(ImVec2(x, y), ImVec2(x + Px(52), y + Px(64)), IM_COL32(224, 235, 190, 16), Px(13));
+        draw->AddRect(ImVec2(x, y), ImVec2(x + Px(52), y + Px(64)), IM_COL32(224, 235, 190, 34), Px(13));
+        UiText(draw, ImVec2(x + Px(15), y + Px(8)), glyphs[i], 34, IM_COL32(232, 241, 207, 235), true);
+    }
+    UiText(draw, ImVec2(tiles_x + Px(7), hero.y + Px(137)), "DẤU VIỆT. NHỊP RIÊNG.", 10, IM_COL32(218, 230, 187, 220), true);
+    draw->PopClipRect();
+    ImGui::Dummy(ImVec2(width, Px(180)));
+    ImGui::Dummy(ImVec2(0, Px(3)));
 
+    ImGui::PushFont(HeadingFont(), TextPx(18));
+    ImGui::TextUnformatted("Thiết lập của bạn");
+    ImGui::PopFont();
+    const float gap = Px(12);
+    const float selector_width = (width - gap * 2) * 0.50f;
+    const float stat_width = (width - gap * 2) * 0.25f;
+    BeginSurface("##TypingSetup", ImVec2(selector_width, Px(136)));
+    ImGui::PushFont(HeadingFont(), TextPx(11));
+    ImGui::TextDisabled("KIỂU GÕ / BẢNG MÃ");
+    ImGui::PopFont();
+    const float combo_width = (ImGui::GetContentRegionAvail().x - Px(8)) * 0.5f;
+    const char* methods[] = {"Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI", "Tự định nghĩa"};
+    const char* charsets[] = {"Unicode", "Unicode tổ hợp", "TCVN3", "VNI Windows"};
+    ImGui::SetNextItemWidth(combo_width);
+    if (ImGui::Combo("##MethodCombo", &config_.method, methods, IM_ARRAYSIZE(methods))) SaveConfig();
+    ImGui::SameLine(0, Px(8));
+    ImGui::SetNextItemWidth(combo_width);
+    if (ImGui::Combo("##CharsetCombo", &config_.charset, charsets, IM_ARRAYSIZE(charsets))) SaveConfig();
+    ImGui::PushFont(nullptr, TextPx(12));
+    ImGui::TextDisabled("Chọn cách gõ quen thuộc của bạn.");
+    ImGui::PopFont();
+    EndSurface();
+    ImGui::SameLine(0, gap);
+    if (SummaryCard("##MacroSummary", "GÕ TẮT", config_.macros.size(), "từ viết tắt", NF_BOLT, ImVec2(stat_width, Px(136))))
+        current_page_ = Page::Macros;
+    ImGui::SameLine(0, gap);
+    if (SummaryCard("##AppsSummary", "ỨNG DỤNG", config_.excluded_apps.size(), "app được bỏ qua", NF_GAMEPAD, ImVec2(stat_width, Px(136))))
+        current_page_ = Page::Apps;
+
+    ImGui::Dummy(ImVec2(0, Px(3)));
+    const float daily_width = (width - gap) * 0.61f;
+    BeginSurface("##Daily", ImVec2(daily_width, Px(324)));
+    ImGui::PushFont(HeadingFont(), TextPx(18));
+    ImGui::TextUnformatted("Sẵn sàng mỗi ngày");
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, Px(3)));
+    if (SettingToggle("Khởi động cùng Windows", "Luôn sẵn sàng khi bạn đăng nhập.", &config_.start_with_windows)) SaveConfig();
+    ImGui::Separator();
+    ImGui::BeginDisabled(!config_.start_with_windows);
+    if (SettingToggle("Mở bảng điều khiển khi khởi động", "Hiện cửa sổ cài đặt khi đăng nhập.", &config_.show_settings_on_startup)) SaveConfig();
+    ImGui::EndDisabled();
+    ImGui::Separator();
+    if (SettingToggle("Âm báo chuyển ngôn ngữ", "Một tín hiệu nhỏ khi đổi Việt / Anh.", &config_.notification_sound)) {
+        SaveConfig();
+        if (config_.notification_sound) vf_play_notification_sound();
+    }
+    EndSurface();
+    ImGui::SameLine(0, gap);
+    BeginSurface("##QuickShortcut", ImVec2(width - daily_width - gap, Px(324)));
+    ImGui::PushFont(HeadingFont(), TextPx(18));
+    ImGui::TextUnformatted("Đổi ngôn ngữ");
+    ImGui::PopFont();
+    ImGui::PushFont(nullptr, TextPx(13));
+    ImGui::TextDisabled("Chuyển nhanh giữa Việt / Anh");
+    ImGui::PopFont();
+    HotkeyBadge(TsfActive() ? "Win + Space" : FormatHotkeyLabel(config_.hotkey_mode).c_str());
+    if (ImGui::Button("Tùy chỉnh phím tắt  >", ImVec2(-1, Px(36)))) current_page_ = Page::Shortcuts;
+    EndSurface();
+
+    ImGui::PushFont(nullptr, TextPx(12));
+    if (TsfActive()) {
+        ImGui::TextDisabled("Windows đang quản lý ngôn ngữ và phím chuyển đổi.");
+    } else if (is_running_as_admin_) {
+        ImGui::TextDisabled(NF_CHECK " Đang chạy với quyền quản trị.");
+    } else {
+        if (ImGui::Button(NF_BOLT " Chạy với quyền quản trị", ImVec2(0, Px(36)))) {
+            HWND daemon = FindWindowW(WINDOW_CLASS_DAEMON, WINDOW_TITLE_DAEMON);
+            if (daemon) {
+                // The daemon closes this UI only AFTER UAC succeeds.
+                // Cancelling elevation must leave the current panel available.
+                DWORD pid = 0;
+                GetWindowThreadProcessId(daemon, &pid);
+                if (pid) AllowSetForegroundWindow(pid);
+                PostMessageW(daemon, WM_COMMAND, IDM_VF_RESTART_ADMIN, 0);
+            }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cho phép gõ trong ứng dụng đang chạy với quyền quản trị.");
+    }
+    ImGui::PopFont();
+}
+
+void UiManager::PageShortcuts() {
     const bool tsf_active = TsfActive();
-    LabelHelp("Chế độ chung:",
-              tsf_active
-                  ? "TSF IME đang kích hoạt: Windows quản lý chế độ gõ qua thanh ngôn ngữ hệ thống."
-                  : "Áp dụng cho app không bị loại trừ. App đang focus có thể tạm tắt V/E theo danh sách Loại trừ.");
-    ImGui::SameLine(0.0f, Px(16.0f));
-
-    if (tsf_active) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
-        ImGui::Button("[TSF] Khóa chế độ TSF IME (Quản lý bởi Windows)", ImVec2(0.0f, Px(28.0f)));
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("VietFlow TSF IME chuẩn Windows đang hoạt động.\nChuyển đổi bộ gõ qua phím Windows (Win + Space hoặc Alt + Shift).");
-        }
-    } else {
-        const char* status_text = config_.enabled ? "[V] Đang bật tiếng Việt" : "[E] Đang tắt tiếng Việt";
-        ImVec4 status_col = config_.enabled ? ImVec4(0.18f, 0.55f, 0.28f, 1.0f) : ImVec4(0.35f, 0.38f, 0.45f, 1.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button, status_col);
-        if (ImGui::Button(status_text, ImVec2(0.0f, Px(28.0f)))) {
-            config_.enabled = !config_.enabled;
-            SaveConfig();
-            if (config_.notification_sound) {
-                vf_play_notification_sound();
-            }
-        }
-        ImGui::PopStyleColor();
-    }
-
-    // Administrator elevation status badge and 1-click relaunch button
-    ImGui::SameLine(0.0f, Px(16.0f));
-    if (is_running_as_admin_) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.42f, 0.25f, 1.0f));
-        ImGui::Button("[Quyền Administrator]", ImVec2(0.0f, Px(28.0f)));
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Đang chạy với quyền Admin; gõ được trong cửa sổ admin và game.");
-        }
-    } else {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.50f, 0.32f, 0.10f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.68f, 0.42f, 0.12f, 1.0f));
-        if (ImGui::Button(NF_BOLT " Chạy quyền Administrator", ImVec2(0.0f, Px(28.0f)))) {
-            HWND hwndDaemon = FindWindowW(WINDOW_CLASS_DAEMON, WINDOW_TITLE_DAEMON);
-            if (hwndDaemon) {
-                PostMessageW(hwndDaemon, WM_COMMAND, IDM_VF_RESTART_ADMIN, 0);
-                if (hwnd_) {
-                    PostMessageW((HWND)hwnd_, WM_CLOSE, 0, 0);
-                }
-            }
-        }
-        ImGui::PopStyleColor(2);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Chạy lại với quyền Admin để gõ trong app admin và game.");
-        }
-    }
-
-    ImGui::Spacing();
-
-    if (ImGui::BeginTable("OverviewSelectors", 2, ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Kiểu gõ", ImGuiTableColumnFlags_WidthStretch, 0.5f);
-        ImGui::TableSetupColumn("Bảng mã", ImGuiTableColumnFlags_WidthStretch, 0.5f);
-
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        LabelHelp("Kiểu gõ chính:",
-                  "Telex dùng chữ cái (aa → â). VNI dùng số (a1 → á). "
-                  "VIQR dùng dấu câu. Telex cơ bản/2 ít tính năng hơn. "
-                  "Telex + VNI dùng được cả hai.");
-        ImGui::SetNextItemWidth(-Px(10.0f));
-        const char* methods[] = {
-            "Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI", "Tự định nghĩa"
-        };
-        if (ImGui::Combo("##MethodCombo", &config_.method, methods, IM_ARRAYSIZE(methods))) {
-            SaveConfig();
-        }
-        if (config_.method == 6) {
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "Đang dùng kiểu gõ tự định nghĩa.");
-            ImGui::TextDisabled("Vào tab [Gõ] để chỉnh từng phím.");
-        }
-
-        ImGui::TableSetColumnIndex(1);
-        LabelHelp("Bảng mã xuất:",
-                  "Unicode cho hầu hết ứng dụng hiện đại. "
-                  "TCVN3/VNI dành cho phần mềm cũ.");
-        ImGui::SetNextItemWidth(-Px(10.0f));
-        const char* charsets[] = {
-            "Unicode", "Unicode tổ hợp", "TCVN3", "VNI Windows"
-        };
-        if (ImGui::Combo("##CharsetCombo", &config_.charset, charsets, IM_ARRAYSIZE(charsets))) {
-            SaveConfig();
-        }
-
-        ImGui::EndTable();
-    }
-
     SectionHeader("Phím tắt V/E");
     if (tsf_active) {
-        ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f),
-                           "  Chế độ TSF IME đang hoạt động: Windows quản lý phím chuyển đổi ngôn ngữ (Win + Space hoặc Alt + Shift).");
+        ImGui::PushStyleColor(ImGuiCol_Text, ThemeTextColor(ImGui::ColorConvertFloat4ToU32(ImVec4(0.72f, 0.82f, 0.52f, 1.0f))));
+        ImGui::TextWrapped("Windows đang quản lý việc chuyển bàn phím. Dùng Win + Space để chọn bàn phím; "
+                           "các thiết lập phím tắt bên dưới áp dụng khi dùng bộ gõ thông thường.");
+        ImGui::PopStyleColor();
         ImGui::Spacing();
+    } else if (config_.hotkey_mode == "CtrlShift" || config_.hotkey_mode == "AltShift") {
+        ImGui::TextWrapped("Chỉ đổi Việt / Anh khi thả tổ hợp phím. Nếu bấm thêm phím khác, bộ gõ giữ nguyên ngôn ngữ.");
     }
     ImGui::BeginDisabled(tsf_active);
 
@@ -840,12 +953,12 @@ void UiManager::PageOverview() {
     for (int i = 0; i < IM_ARRAYSIZE(presets); ++i) {
         bool is_active = (config_.hotkey_mode == presets[i].mode || FormatHotkeyLabel(config_.hotkey_mode) == presets[i].label);
         if (is_active) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.00f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.40f, 0.75f, 1.00f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.37f, 0.48f, 0.25f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.67f, 0.78f, 0.47f, 1.00f));
         }
 
         float btn_w = ImGui::CalcTextSize(presets[i].label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
-        if (ImGui::Button(presets[i].label, ImVec2(btn_w, Px(28.0f)))) {
+        if (ImGui::Button(presets[i].label, ImVec2(btn_w, Px(36)))) {
             config_.hotkey_mode = presets[i].mode;
             recording_hotkey_ = false;
             SaveConfig();
@@ -937,14 +1050,14 @@ void UiManager::PageOverview() {
         float btn_w = ImGui::CalcTextSize(record_btn_label.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.25f, 0.25f, 1.0f));
-        if (ImGui::Button(record_btn_label.c_str(), ImVec2(btn_w, Px(28.0f)))) {
+        if (ImGui::Button(record_btn_label.c_str(), ImVec2(btn_w, Px(36)))) {
             recording_hotkey_ = false;
         }
         ImGui::PopStyleColor(2);
     } else {
         const char* start_record_label = NF_COG "  Ghi tổ hợp phím";
         float btn_w = ImGui::CalcTextSize(start_record_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
-        if (ImGui::Button(start_record_label, ImVec2(btn_w, Px(28.0f)))) {
+        if (ImGui::Button(start_record_label, ImVec2(btn_w, Px(36)))) {
             recording_hotkey_ = true;
         }
     }
@@ -983,7 +1096,7 @@ void UiManager::PageOverview() {
     ImGui::SameLine(0.0f, Px(10.0f));
     const char* assign_label = NF_SAVE " Áp dụng";
     float assign_w = ImGui::CalcTextSize(assign_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
-    if (ImGui::Button(assign_label, ImVec2(assign_w, Px(26.0f)))) {
+    if (ImGui::Button(assign_label, ImVec2(assign_w, Px(36)))) {
         std::string res;
         if (custom_ctrl) res += "Ctrl";
         if (custom_alt) { if (!res.empty()) res += " + "; res += "Alt"; }
@@ -1009,7 +1122,7 @@ void UiManager::PageOverview() {
     }
     ImGui::SameLine();
     if (ImGui::Button(recording_hotkey_target_ == 1 ? NF_BOLT " Đang nghe..." : NF_COG " Ghi",
-                      ImVec2(Px(110.0f), Px(26.0f)))) {
+                      ImVec2(Px(150.0f), Px(36)))) {
         recording_hotkey_target_ = (recording_hotkey_target_ == 1) ? 0 : 1;
     }
     ImGui::TextDisabled("Bấm Ghi, nhấn tổ hợp (Esc hủy) hoặc gõ tay.");
@@ -1030,19 +1143,6 @@ void UiManager::PageOverview() {
         }
     }
 
-    SectionHeader("Hệ thống");
-    if (CheckboxHelp("Khởi động cùng Windows", &config_.start_with_windows,
-                     "Tự chạy VietFlow khi đăng nhập Windows.")) {
-        SaveConfig();
-    }
-    ImGui::Spacing();
-    if (CheckboxHelp("Âm thanh khi chuyển V/E", &config_.notification_sound,
-                     "Phát tiếng nhẹ khi chuyển V/E bằng phím tắt hoặc biểu tượng khay.")) {
-        SaveConfig();
-        if (config_.notification_sound) {
-            vf_play_notification_sound();
-        }
-    }
 }
 
 void UiManager::PageTyping() {
@@ -1055,7 +1155,7 @@ void UiManager::PageTyping() {
     if (tsf_present_) {
         const bool tsf_registered = tsf_registered_;
         const char* reg_btn_text = tsf_registered ? "Hủy đăng ký TSF" : "Đăng ký TSF";
-        if (ImGui::Button(reg_btn_text, ImVec2(0.0f, Px(26.0f)))) {
+        if (ImGui::Button(reg_btn_text, ImVec2(0.0f, Px(36)))) {
             if (tsf_registered) {
                 if (vf_unregister_tsf()) {
                     tsf_registered_ = false;
@@ -1069,11 +1169,11 @@ void UiManager::PageTyping() {
             }
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Cài hoặc gỡ VietFlow khỏi Windows. Đã đăng ký là tự động kích hoạt.");
+            ImGui::SetTooltip("Cài hoặc gỡ VietXKey khỏi Windows. Đã đăng ký là tự động kích hoạt.");
         }
 
         ImGui::SameLine(0.0f, Px(8.0f));
-        if (ImGui::Button("Cài lại TSF", ImVec2(0.0f, Px(26.0f)))) {
+        if (ImGui::Button("Cài lại TSF", ImVec2(0.0f, Px(36)))) {
             if (vf_reinstall_tsf()) {
                 tsf_registered_ = true;
                 config_.use_tsf = true;
@@ -1086,16 +1186,16 @@ void UiManager::PageTyping() {
 
         ImGui::Spacing();
         if (tsf_registered_) {
-            ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f),
+            ImGui::TextColored(ImVec4(0.72f, 0.82f, 0.52f, 1.0f),
                                "  Trạng thái: TSF đang hoạt động (không dùng Backspace xóa chữ).");
-            ImGui::TextDisabled("  Chọn bàn phím VietFlow trên thanh ngôn ngữ Windows (Win + Space) để gõ tiếng Việt.");
+            ImGui::TextDisabled("  Chọn bàn phím VietXKey trên thanh ngôn ngữ Windows (Win + Space) để gõ tiếng Việt.");
             ImGui::TextDisabled("  Game và ứng dụng không có TSF sẽ tự động dùng chế độ Hook truyền thống.");
         } else {
             ImGui::TextColored(ImVec4(0.85f, 0.60f, 0.20f, 1.0f),
                                "  Chưa đăng ký TSF với Windows. Bấm 'Đăng ký TSF' để sử dụng.");
         }
     } else {
-        ImGui::TextDisabled("Chế độ TSF không khả dụng (thiếu file vietflow_tsf.dll).");
+        ImGui::TextDisabled("Chế độ TSF không khả dụng (thiếu file vietxkey_tsf.dll).");
     }
 
     // 2. Cách gửi phím & Chốt từ
@@ -1121,7 +1221,7 @@ void UiManager::PageTyping() {
         SaveConfig();
     }
     if (tsf_active) {
-        ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "TSF đang bật: gõ trực tiếp, không dùng gửi phím.");
+        ImGui::TextColored(ImVec4(0.72f, 0.82f, 0.52f, 1.0f), "TSF đang bật: gõ trực tiếp, không dùng gửi phím.");
     } else {
         ImGui::TextDisabled("Tự động dùng Unicode nhanh và chuyển sang gửi chậm khi cần.");
     }
@@ -1137,13 +1237,14 @@ void UiManager::PageTyping() {
         config_.typing_timeout_ms = (uint64_t)timeout;
         SaveConfig();
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.58f, 0.67f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ThemeTextColor(ImGui::ColorConvertFloat4ToU32(ImVec4(0.59f, 0.63f, 0.56f, 1.00f))));
     ImGui::TextUnformatted("Thời gian chờ giữa hai phím (mặc định: Tắt, giống UniKey / EVKey).");
     ImGui::PopStyleColor();
 
-    SectionHeader("Tự động chuyển E/V (Auto-Switch)");
-    if (CheckboxHelp("Tự động chuyển E/V thông minh khi gõ", &config_.auto_switch_by_typing,
-                     "Tự động nhận diện từ tiếng Anh hoặc tiếng Việt khi gõ để chuyển đổi ngôn ngữ tức thì.")) {
+    SectionHeader("Nhận diện Anh / Việt");
+    if (CheckboxHelp("Nhận diện từ Anh / Việt khi gõ", &config_.auto_switch_by_typing,
+                     "Khi đang bật tiếng Việt, từ tiếng Anh được khôi phục riêng theo từng từ, không tắt bộ gõ. "
+                     "Bạn có thể gõ tiếp tiếng Việt ngay sau dấu cách. Khi đang ở tiếng Anh, bộ gõ có thể nhận ra từ Việt có dấu để chuyển lại.")) {
         SaveConfig();
     }
     if (CheckboxHelp("Tạm dừng tự động chuyển 5s sau khi bấm phím tắt thủ công", &config_.pause_auto_after_manual,
@@ -1154,6 +1255,12 @@ void UiManager::PageTyping() {
     SectionHeader("Dấu tiếng Việt");
     if (CheckboxHelp("Tự sửa từ gõ sai / tiếng Anh", &config_.auto_restore,
                      "Khôi phục từ gốc khi gõ sai dấu hoặc khi nhận diện từ tiếng Anh.")) {
+        SaveConfig();
+    }
+    if (CheckboxHelp("Giữ dấu khi viết không chuẩn chính tả", &config_.preserve_informal_marks,
+                     "Ưu tiên giữ chữ có dấu khi viết từ lóng hoặc cách viết riêng, kể cả khi bấm cách. "
+                     "Có thể làm of thành ò. Từ tiếng Anh có sẵn vẫn được ưu tiên; danh sách tùy chỉnh áp dụng trong chế độ gõ thông thường. "
+                     "Mặc định tắt. Khác với Đặt dấu tự do ở bên dưới.")) {
         SaveConfig();
     }
     if (CheckboxHelp("Đặt dấu tự do", &config_.free_marking,
@@ -1189,19 +1296,19 @@ void UiManager::PageTyping() {
 
     SectionHeader("Ngoại lai & tiếng Anh");
     LabelHelp("Phụ âm ngoại lai:",
-              "Các phụ âm này ở đầu từ sẽ không bị thêm dấu. Mặc định: fjwz.");
+              "Cho phép các phụ âm này đứng đầu từ có dấu, ví dụ zeef → zề. Xóa hết để chỉ dùng phụ âm tiếng Việt chuẩn.");
     ImGui::SetNextItemWidth(Px(120.0f));
     if (ImGui::InputText("##ForeignInitials", foreign_initials_buf_, sizeof(foreign_initials_buf_))) {
         SaveConfig();
     }
-    ImGui::TextDisabled("Mặc định fjwz.");
+    ImGui::TextDisabled("Mặc định fjwz. Ví dụ: zeef → zề.");
 
     ImGui::Spacing();
     ImGui::AlignTextToFramePadding();
     LabelHelp("Từ tiếng Anh giữ nguyên:",
               "Các từ này không bị thêm dấu khi gõ.");
     ImGui::SameLine();
-    if (ImGui::Button(NF_COG "  Chỉnh sửa...", ImVec2(0.0f, Px(26.0f)))) {
+    if (ImGui::Button(NF_COG "  Chỉnh sửa...", ImVec2(0.0f, Px(36)))) {
         ImGui::OpenPopup("Từ tiếng Anh");
     }
     ImGui::TextDisabled("Gồm từ mặc định và từ bạn thêm.");
@@ -1279,7 +1386,7 @@ void UiManager::PageTyping() {
 
                 ImGui::SameLine(Px(220.0f));
                 if (item.is_custom) {
-                    ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f), "[Tự thêm]");
+                    ImGui::TextColored(ImVec4(0.72f, 0.82f, 0.52f, 1.0f), "[Tự thêm]");
                 } else if (item.is_disabled) {
                     ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.4f, 1.0f), "[Đã tắt]");
                 } else {
@@ -1321,7 +1428,7 @@ void UiManager::PageTyping() {
         ImGui::SetNextItemWidth(-Px(100.0f));
         ImGui::InputTextWithHint("##EngNew", "Thêm từ (cách nhau bởi khoảng trắng hoặc phẩy)...", new_english_kw_, sizeof(new_english_kw_));
         ImGui::SameLine();
-        if (ImGui::Button(NF_PLUS "  Thêm", ImVec2(Px(90.0f), Px(26.0f)))) {
+        if (ImGui::Button(NF_PLUS "  Thêm", ImVec2(Px(90.0f), Px(36)))) {
             std::string input(new_english_kw_);
             std::vector<std::string> tokens;
             size_t pos = 0;
@@ -1397,19 +1504,19 @@ void UiManager::PageTyping() {
 
         ImGui::Spacing();
 
-        if (ImGui::Button("Khôi phục mặc định", ImVec2(Px(150.0f), Px(26.0f)))) {
+        if (ImGui::Button("Khôi phục mặc định", ImVec2(Px(180.0f), Px(36)))) {
             config_.english_keywords_removed.clear();
             english_keyword_warning_.clear();
             SaveConfig();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Xóa từ tự thêm", ImVec2(Px(140.0f), Px(26.0f)))) {
+        if (ImGui::Button("Xóa từ tự thêm", ImVec2(Px(140.0f), Px(36)))) {
             config_.english_keywords.clear();
             english_keyword_warning_.clear();
             SaveConfig();
         }
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - Px(80.0f));
-        if (ImGui::Button("Đóng", ImVec2(Px(80.0f), Px(26.0f)))) {
+        if (ImGui::Button("Đóng", ImVec2(Px(80.0f), Px(36)))) {
             english_keyword_warning_.clear();
             ImGui::CloseCurrentPopup();
         }
@@ -1445,10 +1552,10 @@ void UiManager::PageTyping() {
 
         auto PresetButton = [this](const char* label, int preset_id, bool is_active) {
             if (is_active) {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.52f, 0.85f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.37f, 0.48f, 0.25f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.44f, 0.56f, 0.30f, 1.0f));
             }
-            if (ImGui::Button(label, ImVec2(Px(95.0f), Px(24.0f)))) {
+            if (ImGui::Button(label, ImVec2(Px(118.0f), Px(36)))) {
                 LoadCustomKeymapPreset(preset_id);
                 SaveConfig();
             }
@@ -1463,7 +1570,7 @@ void UiManager::PageTyping() {
         ImGui::SameLine();
         PresetButton("Mẫu VIQR", 2, is_viqr_match);
         ImGui::SameLine();
-        if (ImGui::Button("Xóa trắng", ImVec2(Px(80.0f), Px(24.0f)))) {
+        if (ImGui::Button("Xóa trắng", ImVec2(Px(100.0f), Px(36)))) {
             LoadCustomKeymapPreset(3);
             SaveConfig();
         }
@@ -1474,7 +1581,7 @@ void UiManager::PageTyping() {
             ImGui::TextUnformatted(label);
             if (example && example[0]) {
                 ImGui::SameLine();
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.50f, 0.55f, 0.65f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, ThemeTextColor(ImGui::ColorConvertFloat4ToU32(ImVec4(0.59f, 0.63f, 0.56f, 1.0f))));
                 ImGui::TextUnformatted(example);
                 ImGui::PopStyleColor();
             }
@@ -1553,13 +1660,13 @@ void UiManager::PageTyping() {
         ImGui::SetNextItemWidth(Px(280.0f));
         ImGui::InputTextWithHint("##TestCustomTyping", "Gõ thử tiếng Việt tại đây...", custom_test_buf_, sizeof(custom_test_buf_));
         ImGui::SameLine();
-        if (ImGui::Button("Xóa chữ", ImVec2(Px(70.0f), Px(24.0f)))) {
+        if (ImGui::Button("Xóa chữ", ImVec2(Px(95.0f), Px(36)))) {
             custom_test_buf_[0] = '\0';
         }
 
         ImGui::Spacing();
         if (config_.method != 6) {
-            if (ImGui::Button(NF_BOLT "  Dùng kiểu gõ này", ImVec2(0.0f, Px(28.0f)))) {
+            if (ImGui::Button(NF_BOLT "  Dùng kiểu gõ này", ImVec2(0.0f, Px(36)))) {
                 config_.method = 6;
                 SaveConfig();
             }
@@ -1651,7 +1758,7 @@ void UiManager::PageMacros() {
     }
     ImGui::EndDisabled();
 
-    if (ImGui::Button(NF_FOLDER "  Nhập từ file...", ImVec2(0.0f, Px(26.0f)))) {
+    if (ImGui::Button(NF_FOLDER "  Nhập từ file...", ImVec2(0.0f, Px(36)))) {
         std::string path = PickMacroFile(false);
         if (!path.empty()) {
             size_t count = ImportMacros(path, config_.macros);
@@ -1666,7 +1773,7 @@ void UiManager::PageMacros() {
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button(NF_SAVE "  Xuất ra file...", ImVec2(0.0f, Px(26.0f)))) {
+    if (ImGui::Button(NF_SAVE "  Xuất ra file...", ImVec2(0.0f, Px(36)))) {
         std::string path = PickMacroFile(true);
         if (!path.empty()) {
             size_t count = ExportMacros(path, config_.macros);
@@ -1703,7 +1810,7 @@ void UiManager::PageMacros() {
     bool enter_pressed = ImGui::InputTextWithHint("##MacroVal", "Cụm từ đầy đủ (Nhấn Enter để thêm)...", new_macro_val_, sizeof(new_macro_val_), ImGuiInputTextFlags_EnterReturnsTrue);
 
     ImGui::SameLine();
-    bool btn_clicked = ImGui::Button(NF_SAVE "  Lưu", ImVec2(btn_width, Px(26.0f)));
+    bool btn_clicked = ImGui::Button(NF_SAVE "  Lưu", ImVec2(btn_width, Px(36)));
     if (enter_pressed || btn_clicked) {
         if (strlen(new_macro_key_) > 0 && strlen(new_macro_val_) > 0) {
             std::string key = new_macro_key_;
@@ -1716,7 +1823,7 @@ void UiManager::PageMacros() {
         }
     }
 
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.60f, 0.70f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ThemeTextColor(ImGui::ColorConvertFloat4ToU32(ImVec4(0.59f, 0.63f, 0.56f, 1.00f))));
     ImGui::TextUnformatted("Biến: @date, @time, @datetime, @clipboard, @tab, @newline");
     ImGui::PopStyleColor();
     ImGui::SameLine();
@@ -1739,13 +1846,13 @@ void UiManager::PageMacros() {
     if (ImGui::BeginPopupModal("Xác nhận xóa toàn bộ gõ tắt", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("Bạn có chắc chắn muốn xóa toàn bộ danh sách từ gõ tắt không?");
         ImGui::Spacing();
-        if (ImGui::Button("Xác nhận xóa", ImVec2(Px(110.0f), Px(26.0f)))) {
+        if (ImGui::Button("Xác nhận xóa", ImVec2(Px(140.0f), Px(36)))) {
             config_.macros.clear();
             SaveConfig();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Hủy bỏ", ImVec2(Px(80.0f), Px(26.0f)))) {
+        if (ImGui::Button("Hủy bỏ", ImVec2(Px(80.0f), Px(36)))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -1813,8 +1920,8 @@ void UiManager::PageApps() {
 
     if (CheckboxHelp("Dùng E/V cho từng ứng dụng",
                      &config_.remember_per_app_mode,
-                     "Loại trừ những ứng dụng tự động, VietFlow nhớ thiết lập E/V cho mỗi ứng dụng.\n"
-                     "Mỗi lần sau chuyển đổi qua lại những ứng dụng, VietFlow sẽ tự động chuyển E/V theo từng ứng dụng một cách linh động.")) {
+                     "Loại trừ những ứng dụng tự động, VietXKey nhớ thiết lập E/V cho mỗi ứng dụng.\n"
+                     "Mỗi lần sau chuyển đổi qua lại những ứng dụng, VietXKey sẽ tự động chuyển E/V theo từng ứng dụng một cách linh động.")) {
         SaveConfig();
     }
 
@@ -1830,7 +1937,7 @@ void UiManager::PageApps() {
     ImGui::SetNextItemWidth(Px(240.0f));
     ImGui::InputTextWithHint("##NewProfileApp", "vd: Code.exe, chrome.exe...", new_profile_app_, sizeof(new_profile_app_));
     ImGui::SameLine();
-    if (ImGui::Button(NF_PLUS "  Thêm app", ImVec2(Px(120.0f), Px(26.0f)))) {
+    if (ImGui::Button(NF_PLUS "  Thêm app", ImVec2(Px(120.0f), Px(36)))) {
         std::string app = new_profile_app_;
         LowerAsciiInPlace(app);
         if (!app.empty() && config_.app_profiles.find(app) == config_.app_profiles.end()) {
@@ -1939,7 +2046,7 @@ void UiManager::PageApps() {
     ImGui::InputTextWithHint("##NewExclApp", "vd: cs2.exe...", new_excluded_app_, sizeof(new_excluded_app_));
     ImGui::SameLine();
 
-    if (ImGui::Button(NF_PLUS " Thêm", ImVec2(Px(75.0f), Px(26.0f)))) {
+    if (ImGui::Button(NF_PLUS " Thêm", ImVec2(Px(75.0f), Px(36)))) {
         if (strlen(new_excluded_app_) > 0) {
             std::string app = new_excluded_app_;
             LowerAsciiInPlace(app);
@@ -1954,7 +2061,7 @@ void UiManager::PageApps() {
     ImGui::Spacing();
     const char* file_btn_label = NF_FOLDER " Chọn file .exe...";
     float file_btn_w = ImGui::CalcTextSize(file_btn_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
-    if (ImGui::Button(file_btn_label, ImVec2(file_btn_w, Px(28.0f)))) {
+    if (ImGui::Button(file_btn_label, ImVec2(file_btn_w, Px(36)))) {
         OPENFILENAMEW ofn = { sizeof(ofn) };
         wchar_t szFile[MAX_PATH] = { 0 };
         ofn.hwndOwner = (HWND)hwnd_;
@@ -1978,7 +2085,7 @@ void UiManager::PageApps() {
     ImGui::SameLine(0.0f, Px(12.0f));
     const char* app_btn_label = NF_GAMEPAD "  Chọn app đang chạy";
     float app_btn_w = ImGui::CalcTextSize(app_btn_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
-    if (ImGui::Button(app_btn_label, ImVec2(app_btn_w, Px(28.0f)))) {
+    if (ImGui::Button(app_btn_label, ImVec2(app_btn_w, Px(36)))) {
         running_apps_list_ = GetRunningApps();
         app_search_filter_[0] = '\0';
         ImGui::OpenPopup("Chọn ứng dụng đang chạy");
@@ -2005,10 +2112,10 @@ void UiManager::PageApps() {
         bool already = (std::find(config_.excluded_apps.begin(), config_.excluded_apps.end(), s_quick_excls[i].exe) != config_.excluded_apps.end());
         if (already) {
             ImGui::BeginDisabled();
-            ImGui::Button((std::string(NF_CHECK " ") + s_quick_excls[i].label).c_str(), ImVec2(0.0f, Px(24.0f)));
+            ImGui::Button((std::string(NF_CHECK " ") + s_quick_excls[i].label).c_str(), ImVec2(0.0f, Px(36)));
             ImGui::EndDisabled();
         } else {
-            if (ImGui::Button((std::string(NF_PLUS " ") + s_quick_excls[i].label).c_str(), ImVec2(0.0f, Px(24.0f)))) {
+            if (ImGui::Button((std::string(NF_PLUS " ") + s_quick_excls[i].label).c_str(), ImVec2(0.0f, Px(36)))) {
                 config_.excluded_apps.push_back(s_quick_excls[i].exe);
                 if (s_quick_excls[i].alt_exe && std::find(config_.excluded_apps.begin(), config_.excluded_apps.end(), s_quick_excls[i].alt_exe) == config_.excluded_apps.end()) {
                     config_.excluded_apps.push_back(s_quick_excls[i].alt_exe);
@@ -2072,7 +2179,7 @@ void UiManager::PageApps() {
                     ImGui::Text(" %s", app.exe_name.c_str());
                     if (!app.window_title.empty()) {
                         ImGui::SameLine();
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.60f, 0.70f, 1.0f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, ThemeTextColor(ImGui::ColorConvertFloat4ToU32(ImVec4(0.59f, 0.63f, 0.56f, 1.0f))));
                         ImGui::TextUnformatted(("(" + app.window_title + ")").c_str());
                         ImGui::PopStyleColor();
                     }
@@ -2083,7 +2190,7 @@ void UiManager::PageApps() {
         ImGui::EndChild();
 
         ImGui::Spacing();
-        if (ImGui::Button("Đóng", ImVec2(Px(100.0f), Px(26.0f)))) {
+        if (ImGui::Button("Đóng", ImVec2(Px(100.0f), Px(36)))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -2117,7 +2224,7 @@ void UiManager::PageTrayIcon() {
     SectionHeader("Biểu tượng khay");
 
     if (tsf_active) {
-        ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "TSF đang bật: khay dùng biểu tượng TSF.");
+        ImGui::TextColored(ImVec4(0.72f, 0.82f, 0.52f, 1.0f), "TSF đang bật: khay dùng biểu tượng TSF.");
         ImGui::Spacing();
     }
 
@@ -2234,7 +2341,7 @@ void UiManager::PageTrayIcon() {
             SaveConfig();
         }
         ImGui::SameLine(0.0f, Px(6.0f));
-        if (ImGui::Button("Chọn...", ImVec2(Px(78.0f), Px(24.0f)))) {
+        if (ImGui::Button("Chọn...", ImVec2(Px(92.0f), Px(36)))) {
             const std::string picked = PickIconFile(path);
             if (!picked.empty()) {
                 path = picked;
@@ -2242,13 +2349,13 @@ void UiManager::PageTrayIcon() {
             }
         }
         ImGui::SameLine(0.0f, Px(6.0f));
-        if (ImGui::Button("Bỏ", ImVec2(Px(48.0f), Px(24.0f)))) {
+        if (ImGui::Button("Bỏ", ImVec2(Px(48.0f), Px(36)))) {
             path.clear();
             SaveConfig();
         }
         if (!path.empty()) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f), "Đang dùng");
+            ImGui::TextColored(ImVec4(0.72f, 0.82f, 0.52f, 1.0f), "Đang dùng");
         }
         ImGui::PopID();
     };
@@ -2257,7 +2364,7 @@ void UiManager::PageTrayIcon() {
     ImGui::TextDisabled("Màu tô/viền chỉ áp dụng cho icon chữ V/E, không áp dụng cho icon riêng.");
 
     ImGui::Spacing();
-    if (ImGui::Button(NF_SAVE " Lưu & Áp dụng icon khay", ImVec2(0.0f, Px(28.0f)))) {
+    if (ImGui::Button(NF_SAVE " Lưu & Áp dụng icon khay", ImVec2(0.0f, Px(36)))) {
         config_.tray_icon_e_fill_color = ImVec4ToHex(e_fill_col);
         config_.tray_icon_e_border_color = ImVec4ToHex(e_border_col);
         config_.tray_icon_v_fill_color = ImVec4ToHex(v_fill_col);
@@ -2265,7 +2372,7 @@ void UiManager::PageTrayIcon() {
         SaveConfig();
     }
     ImGui::SameLine(0.0f, Px(10.0f));
-    if (ImGui::Button("Khôi phục mặc định", ImVec2(0.0f, Px(28.0f)))) {
+    if (ImGui::Button("Khôi phục mặc định", ImVec2(0.0f, Px(36)))) {
         config_.custom_icon_v.clear();
         config_.custom_icon_e.clear();
         config_.tray_icon_e_fill = true;
@@ -2287,96 +2394,113 @@ void UiManager::PageTrayIcon() {
     ImGui::Dummy(ImVec2(0.0f, Px(20.0f)));
 }
 
+
 void UiManager::PageAbout() {
-    SectionHeader("Thông tin phần mềm");
-    ImGui::TextUnformatted("VietFlow - Bộ gõ tiếng Việt nhẹ, hiện đại");
-    ImGui::TextUnformatted("Phiên bản: v" VIETFLOW_VERSION);
-    ImGui::TextUnformatted("Giấy phép: GPLv3");
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 max(p.x + width, p.y + Px(206));
+    GradientPanel(draw, p, max, ThemeColor(IM_COL32(32,40,45,255),IM_COL32(254,255,250,255)), ThemeColor(IM_COL32(49,60,58,255),IM_COL32(225,237,209,255)), Px(18));
+    draw->PushClipRect(p, max, true);
+    UiText(draw, ImVec2(p.x + Px(28), p.y + Px(23)), "GÕ TỰ NHIÊN. VIẾT THEO CÁCH BẠN.",
+           10, IM_COL32(211, 225, 183, 255), true);
+    UiText(draw, ImVec2(p.x + Px(26), p.y + Px(47)), "VietXKey", 46,
+           IM_COL32(247, 249, 236, 255), true);
+    UiText(draw, ImVec2(p.x + Px(28), p.y + Px(113)), "Bộ gõ tiếng Việt gọn nhẹ và gần gũi.",
+           16, IM_COL32(226, 236, 204, 255));
+    UiText(draw, ImVec2(p.x + Px(28), p.y + Px(140)), "Fix lỗi và phát triển thêm bởi Minh Tâm Đoàn.",
+           14, IM_COL32(226, 236, 204, 255));
+    UiText(draw, ImVec2(p.x + Px(28), p.y + Px(176)), "ĐƯỢC TINH CHỈNH CHO NHỊP GÕ CỦA BẠN",
+           10, IM_COL32(205, 220, 176, 255), true);
+    const ImVec2 mark(max.x - Px(143), p.y + Px(37));
+    draw->AddCircle(ImVec2(mark.x + Px(42), mark.y + Px(54)), Px(103), IM_COL32(224, 235, 190, 25), 80, Px(1));
+    DrawBrandKeycap(draw, mark, Px(104));
+    draw->PopClipRect();
+    ImGui::Dummy(ImVec2(width, Px(206)));
+    ImGui::Dummy(ImVec2(0, Px(3)));
 
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Trang chủ dự án:");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("github.com/KienPC1234/VietFlow")) {
-        ShellExecuteA(NULL, "open", REPO_URL, NULL, NULL, SW_SHOWNORMAL);
+    const float gap = Px(12);
+    const float card_width = (width - gap * 2) / 3;
+    auto detail_card = [&](const char* id, const char* label, const char* value, const char* detail) {
+        BeginSurface(id, ImVec2(card_width, Px(128)));
+        ImGui::PushFont(HeadingFont(), TextPx(10));
+        ImGui::TextDisabled("%s", label);
+        ImGui::PopFont();
+        ImGui::PushFont(HeadingFont(), TextPx(22));
+        ImGui::TextUnformatted(value);
+        ImGui::PopFont();
+        ImGui::PushFont(nullptr, TextPx(12));
+        ImGui::TextDisabled("%s", detail);
+        ImGui::PopFont();
+        EndSurface();
+    };
+    detail_card("##Version", "PHIÊN BẢN", VIETFLOW_VERSION, "Nền sáng / tối, điểm nhấn rêu");
+    ImGui::SameLine(0, gap);
+    detail_card("##Platform", "NỀN TẢNG", "Windows", "Ứng dụng desktop");
+    ImGui::SameLine(0, gap);
+    detail_card("##License", "GIẤY PHÉP", "GPLv3", "Tự do sử dụng và chia sẻ");
+
+    const char* credits_text = "Tác giả dự án gốc: VietFlow Team.";
+    const char* algorithm_credit = "Lõi gõ tiếng Việt kế thừa thuật toán UniKey của Phạm Kim Long.";
+    const float credits_height = Px(128)
+        + ImGui::CalcTextSize(credits_text, nullptr, false, width - Px(40)).y - ImGui::GetFontSize()
+        + ImGui::CalcTextSize(algorithm_credit, nullptr, false, width - Px(40)).y - ImGui::GetFontSize();
+    BeginSurface("##OpenSourceCredits", ImVec2(width, credits_height));
+    ImGui::PushFont(HeadingFont(), TextPx(18));
+    ImGui::TextUnformatted("Thông tin phát triển");
+    ImGui::PopFont();
+    ImGui::TextWrapped("%s", credits_text);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", algorithm_credit);
+    ImGui::PopStyleColor();
+    EndSurface();
+
+    if (ImGui::Button("Ủng hộ tác giả", ImVec2(Px(210), Px(36)))) {
+        donation_popup_requested_ = true;
+    }
+    ImGui::SameLine(0, Px(12));
+    if (ImGui::Button(NF_FOLDER "  Thư mục cấu hình", ImVec2(0, Px(36)))) {
+        const std::wstring parent = std::filesystem::path(config_path_).parent_path().wstring();
+        ShellExecuteW(nullptr, L"open", parent.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
-    ImGui::Spacing();
-    const char* chk_label = NF_CONVERT " Kiểm tra bản cập nhật";
-    float chk_w = ImGui::CalcTextSize(chk_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
-    if (ImGui::Button(chk_label, ImVec2(chk_w, Px(28.0f)))) {
-        HWND hwndDaemon = FindWindowW(WINDOW_CLASS_DAEMON, WINDOW_TITLE_DAEMON);
-        if (hwndDaemon) {
-            PostMessageW(hwndDaemon, WM_COMMAND, IDM_VF_CHECK_UPDATE, 0);
+    ImGui::Dummy(ImVec2(0, Px(10)));
+}
+
+void UiManager::RenderDonationPopup() {
+    const char* title = "Ủng hộ tác giả";
+    if (donation_popup_requested_) {
+        ImGui::OpenPopup(title);
+        donation_popup_requested_ = false;
+    }
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(Px(360), 0), ImVec2(Px(400), FLT_MAX));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(24), Px(20)));
+    bool open = true;
+    if (ImGui::BeginPopupModal(title, &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize)) {
+        ImGui::TextWrapped("Cảm ơn anh/chị đã đồng hành cùng VietXKey.");
+        ImGui::Spacing();
+        const ImTextureID qr = DonationQrTexture();
+        if (qr != ImTextureID_Invalid) {
+            const float size = Px(256);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - size) * 0.5f);
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            auto& platform = ImGui::GetPlatformIO();
+            if (platform.DrawCallback_SetSamplerNearest) draw->AddCallback(platform.DrawCallback_SetSamplerNearest, nullptr);
+            ImGui::Image(qr, ImVec2(size, size));
+            if (platform.DrawCallback_SetSamplerLinear) draw->AddCallback(platform.DrawCallback_SetSamplerLinear, nullptr);
         } else {
-            ShellExecuteA(NULL, "open", RELEASES_URL, NULL, NULL, SW_SHOWNORMAL);
+            ImGui::TextWrapped("Chưa thể hiển thị mã QR. Vui lòng đóng và mở lại bảng điều khiển.");
         }
-    }
-
-    ImGui::SameLine(0.0f, Px(12.0f));
-    const char* dir_label = NF_FOLDER " Mở thư mục cấu hình";
-    float dir_w = ImGui::CalcTextSize(dir_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
-    if (ImGui::Button(dir_label, ImVec2(dir_w, Px(28.0f)))) {
-        std::string p = Config::GetDefaultConfigPath();
-        std::filesystem::path fp(p);
-        std::wstring parent_dir = fp.parent_path().wstring();
-        ShellExecuteW(NULL, L"open", parent_dir.c_str(), NULL, NULL, SW_SHOWNORMAL);
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    SectionHeader("Ủng hộ tác giả");
-    ImGui::TextUnformatted("Nếu thấy VietFlow hữu ích, bạn có thể ủng hộ tác giả:");
-
-    ImGui::Spacing();
-    if (ImGui::BeginTable("DonationTable", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg, ImVec2(Px(500.0f), 0.0f))) {
-        ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, Px(130.0f));
-        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted("Ngân hàng:");
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(DONATION_BANK_NAME);
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted("Số tài khoản:");
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(DONATION_ACCOUNT_DISPLAY);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Sao chép STK")) {
-            ImGui::SetClipboardText(DONATION_ACCOUNT_NO);
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Minh Tâm Đoàn");
+        if (ImGui::Button("Đóng", ImVec2(-1, Px(36))) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            ImGui::CloseCurrentPopup();
         }
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted("Chủ tài khoản:");
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(DONATION_ACCOUNT_HOLDER);
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted("Nội dung:");
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(DONATION_MESSAGE);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Sao chép nội dung")) {
-            ImGui::SetClipboardText(DONATION_MESSAGE);
-        }
-
-        ImGui::EndTable();
+        ImGui::EndPopup();
     }
-
-    ImGui::Spacing();
-    const char* qr_label = NF_CONVERT " Mở mã QR chuyển khoản (VietQR)";
-    float qr_w = ImGui::CalcTextSize(qr_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
-    if (ImGui::Button(qr_label, ImVec2(qr_w, Px(28.0f)))) {
-        ShellExecuteA(NULL, "open", DONATION_VIETQR_URL, NULL, NULL, SW_SHOWNORMAL);
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, Px(20.0f)));
+    ImGui::PopStyleVar();
 }
 
 } // namespace vietflow

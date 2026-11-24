@@ -6,8 +6,7 @@ use std::collections::HashMap;
 use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE, LPARAM};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-    TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -17,6 +16,23 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetWindowThr
 struct UwpChildSearch {
     parent_pid: u32,
     child_pid: Option<u32>,
+}
+
+/// Chromium's address bar uses reverse-selected inline completions. Keep the
+/// compatibility route exact; arbitrary Electron apps need not share that UI.
+pub fn is_chromium_browser(process: Option<&str>) -> bool {
+    let Some(name) = process else {
+        return false;
+    };
+    let stem = match name.rsplit_once('.') {
+        Some((stem, extension)) if extension.eq_ignore_ascii_case("exe") => stem,
+        _ => name,
+    };
+    [
+        "comet", "chrome", "chromium", "msedge", "brave", "vivaldi", "opera",
+    ]
+    .iter()
+    .any(|browser| stem.eq_ignore_ascii_case(browser))
 }
 
 unsafe extern "system" fn enum_child_uwp_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {

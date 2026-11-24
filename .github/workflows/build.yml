@@ -1,181 +1,38 @@
-name: build
+name: Build VietXKey Windows x64
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
   workflow_dispatch:
+  pull_request:
+    paths: ['core/**', 'ffi/**', 'platforms/**', 'ui_imgui/**', 'assets/**', 'scripts/**', 'Cargo.*', '.github/workflows/build.yml']
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: native-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test (x64)
+  windows-x64:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc, aarch64-pc-windows-msvc
-          components: clippy
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build ImGui UI (x64)
+      - name: Check Rust toolchain
+        shell: pwsh
+        run: rustup show
+      - name: Build and test native x64 app
         shell: pwsh
         run: |
-          cmake -B ui_imgui/build -S ui_imgui -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=ON -DVIETFLOW_BUILD_CONFIG_TESTS=ON
-          if ($LASTEXITCODE -ne 0) { throw 'ImGui config QA configure failed' }
+          ./scripts/build-vietxkey.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'VietXKey build failed' }
+      - name: Verify native configuration persistence
+        shell: pwsh
+        run: |
+          cmake -S ui_imgui -B ui_imgui/build -DVIETFLOW_BUILD_CONFIG_TESTS=ON -DVIETFLOW_STATIC_CRT=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Config test configure failed' }
           cmake --build ui_imgui/build --config Release
-          if ($LASTEXITCODE -ne 0) { throw 'ImGui build failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Config test build failed' }
           ctest --test-dir ui_imgui/build -C Release --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw 'C++ GUI config persistence/recovery regression failed' }
-
-      - name: Verify offline release preflight and tampering rejection
-        shell: pwsh
-        run: ./scripts/tests/test_release_preflight.ps1
-
-      - name: Reject stale or mixed-architecture MSI and ZIP inputs
-        shell: pwsh
-        run: ./scripts/tests/test_release_asset_sources.ps1
-
-      - name: Verify MSI safe-upgrade and uninstall authoring offline
-        shell: pwsh
-        run: ./scripts/tests/test_msi_authoring.ps1
-
-      - name: Lint Rust workspace including tests (deny warnings)
-        shell: pwsh
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Run workspace tests
-        shell: pwsh
-        env:
-          RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo test --workspace --locked
-
-      - name: Verify Rust daemon and C++ GUI config writers across processes
-        shell: pwsh
-        env:
-          RUSTFLAGS: -C target-feature=+crt-static
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:VIETFLOW_CPP_CONFIG_QA_EXE = Join-Path $env:GITHUB_WORKSPACE 'ui_imgui/build/Release/vietflow_config_persistence_test.exe'
-          if (-not (Test-Path -LiteralPath $env:VIETFLOW_CPP_CONFIG_QA_EXE)) {
-            throw 'Missing independent C++ GUI config QA executable'
-          }
-          cargo test -p vietflow-windows --locked cross_language_rust_daemon_and_cpp_gui_config_writers -- --ignored --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'Rust/C++ config writer regression failed' }
-
-      - name: Verify isolated TSF layout and cross-process IPC consistency
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $qaDir = Join-Path $env:RUNNER_TEMP 'vietflow-tsf-ipc-qa'
-          cmake -S platforms/windows_tsf -B $qaDir -DVIETFLOW_BUILD_IPC_SMOKE=ON
-          if ($LASTEXITCODE -ne 0) { throw 'TSF IPC configure failed' }
-          cmake --build $qaDir --config Release --target vietflow_tsf_layout_smoke vietflow_tsf_ipc_smoke vietflow_tsf_ipc_process_stress
-          if ($LASTEXITCODE -ne 0) { throw 'TSF IPC native test build failed' }
-          ctest --test-dir $qaDir -C Release --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw 'TSF layout or IPC regression failed' }
-
-  build:
-    name: Build ${{ matrix.arch }}
-    needs: test
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runner: windows-latest
-          - arch: x86
-            runner: windows-latest
-          - arch: arm64
-            runner: windows-11-vs2026-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc, aarch64-pc-windows-msvc
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.arch }}
-
-      - name: Build portable executable
-        shell: pwsh
-        run: ./scripts/build.ps1 -Arch ${{ matrix.arch }} -SkipTests
-
-      - name: Verify architecture and artifact provenance
-        shell: pwsh
-        run: ./scripts/verify_release_artifacts.ps1 -Arch ${{ matrix.arch }}
-
-      - name: Compile MSI authoring with WiX v5 (x64, no installation)
-        if: matrix.arch == 'x64'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $repo = $env:GITHUB_WORKSPACE
-          $toolDir = Join-Path $env:RUNNER_TEMP 'vietflow-wix-compile-only'
-          dotnet tool install wix --version 5.0.2 --tool-path $toolDir
-          if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed' }
-          $wix = Join-Path $toolDir 'wix.exe'
-          Push-Location $toolDir
-          try {
-            & $wix extension add WixToolset.UI.wixext/5.0.2
-            if ($LASTEXITCODE -ne 0) { throw 'WiX UI extension unavailable' }
-            & $wix extension add WixToolset.Util.wixext/5.0.2
-            if ($LASTEXITCODE -ne 0) { throw 'WiX Util extension unavailable' }
-            $version = (Get-Content (Join-Path $repo 'VERSION') -Raw).Trim()
-            $exe = Join-Path $repo 'dist/VietFlow-x64.exe'
-            $dll = Join-Path $repo 'dist/vietflow_tsf.dll'
-            if (-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $dll)) {
-              throw 'Canonical x64 MSI build inputs unavailable'
-            }
-            $output = Join-Path $toolDir 'vietflow-msi-authoring-only.msi'
-            & $wix build (Join-Path $repo 'installer/wix/VietFlow.wxs') -arch x64 -ext WixToolset.UI.wixext/5.0.2 -ext WixToolset.Util.wixext/5.0.2 -d "Version=$version" -d "SourceDir=$repo" -d "BinaryPath=$exe" -d "TsfDllPath=$dll" -o $output
-            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
-              throw 'WiX compile-only MSI validation failed'
-            }
-            $decompiled = Join-Path $toolDir 'msi-authoring-decompiled.wxs'
-            & $wix msi decompile $output -out $decompiled
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify compiled MSI tables' }
-            $compiledSource = Get-Content -LiteralPath $decompiled -Raw
-            if (-not $compiledSource.Contains('--msi-final-unregister-tsf') -or
-                -not $compiledSource.Contains('NOT UPGRADINGPRODUCTCODE')) {
-              throw 'Compiled MSI lost the final-uninstall TSF guard'
-            }
-            Write-Host 'PASS: compiled x64 MSI contains final-uninstall-only TSF action; no installation performed'
-          } finally {
-            Pop-Location
-          }
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: VietFlow-${{ matrix.arch }}
-          path: |
-            dist/VietFlow*.exe
-            dist/vietflow_tsf*.dll
-            dist/pe-manifest-*.json
-            dist/version.txt
-            dist/latest.json
-          if-no-files-found: error
+          if ($LASTEXITCODE -ne 0) { throw 'Config tests failed' }

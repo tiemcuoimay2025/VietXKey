@@ -5,6 +5,7 @@
 mod clipboard;
 mod config;
 mod hook;
+mod hotkey;
 mod icon;
 mod inject;
 mod process;
@@ -23,15 +24,16 @@ use std::time::SystemTime;
 use vietflow_core::models::{CharsetId, InputMethod};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
+    WAIT_OBJECT_0, WAIT_ABANDONED,
 };
 
 use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize, WaitForSingleObject, ReleaseMutex};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, KillTimer, MessageBoxW,
+    AllowSetForegroundWindow, GetWindowThreadProcessId, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, KillTimer, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, ShowWindow,
     TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
     MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_CLIPBOARDUPDATE,
@@ -54,6 +56,30 @@ extern "system" {
         bInitialOwner: i32,
         lpName: *const u16,
     ) -> HANDLE;
+}
+
+/// Own the daemon mutex until shutdown. During elevation, wait for the old
+/// owner to exit instead of repeatedly closing/recreating a named object.
+#[derive(Debug)]
+struct DaemonInstanceGuard(HANDLE);
+impl Drop for DaemonInstanceGuard {
+    fn drop(&mut self) {
+        unsafe { ReleaseMutex(self.0); CloseHandle(self.0); }
+    }
+}
+unsafe fn acquire_daemon_instance(name: &[u16], elevated: bool) -> Result<DaemonInstanceGuard, u32> {
+    let handle = CreateMutexW(null_mut(), 1, name.as_ptr());
+    let error = GetLastError();
+    if handle.is_null() { return Err(error); }
+    if error != ERROR_ALREADY_EXISTS { return Ok(DaemonInstanceGuard(handle)); }
+    if elevated {
+        let wait = WaitForSingleObject(handle, 10_000);
+        if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
+            return Ok(DaemonInstanceGuard(handle));
+        }
+    }
+    CloseHandle(handle);
+    Err(ERROR_ALREADY_EXISTS)
 }
 
 static mut TRAY_PTR: *mut TrayIcon = null_mut();
@@ -161,6 +187,9 @@ fn spawn_gui() {
                 return;
             }
             if let Ok(child) = command.spawn() {
+                // Pass the foreground permission of this user-initiated action
+                // to the separate GUI process before its window is created.
+                unsafe { AllowSetForegroundWindow(child.id()); }
                 children.push(child);
             }
         }
@@ -201,7 +230,7 @@ fn show_warning(message: &str) {
 
 fn show_message(message: &str, flags: u32) {
     let message = to_wide(message);
-    let title = to_wide("VietFlow");
+    let title = to_wide("VietXKey");
     unsafe {
         MessageBoxW(null_mut(), message.as_ptr(), title.as_ptr(), flags);
     }
@@ -214,7 +243,7 @@ fn warn_ime_conflicts() {
     }
     let message = format!(
         "Phát hiện bộ gõ tiếng Việt khác đang chạy:\n{}\n\n\
-         Hãy tắt bộ gõ này khi dùng VietFlow để tránh gõ đúp hoặc mất dấu.",
+         Hãy tắt bộ gõ này khi dùng VietXKey để tránh gõ đúp hoặc mất dấu.",
         conflicts.join(", ")
     );
     show_message(
@@ -240,6 +269,9 @@ unsafe fn open_existing_settings() -> bool {
     for _ in 0..30 {
         let hwnd = FindWindowW(class_name.as_ptr(), window_title.as_ptr());
         if !hwnd.is_null() {
+            let mut pid = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid != 0 { AllowSetForegroundWindow(pid); }
             PostMessageW(hwnd, WM_SETTINGS, 0, 0);
             return true;
         }
@@ -249,10 +281,12 @@ unsafe fn open_existing_settings() -> bool {
     false
 }
 
-const EMBEDDED_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/JetBrainsMonoNerdFont-Regular.ttf");
+const EMBEDDED_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/Nunito-Medium.ttf");
+const HEADING_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/Nunito-ExtraBold.ttf");
 
 extern "C" {
     fn SetEmbeddedFontData(data: *const u8, size: usize);
+    fn SetHeadingFontData(data: *const u8, size: usize);
     fn SetTrayFontData(data: *const u8, size: usize);
     fn ShowSettingsGui(config_path: *const std::ffi::c_char, on_saved: Option<extern "C" fn()>) -> i32;
     fn ShowConverterGui(config_path: *const std::ffi::c_char) -> i32;
@@ -268,6 +302,7 @@ fn run_native_gui(convert_mode: bool) {
             return;
         }
         SetEmbeddedFontData(EMBEDDED_FONT.as_ptr(), EMBEDDED_FONT.len());
+        SetHeadingFontData(HEADING_FONT.as_ptr(), HEADING_FONT.len());
         SetTrayFontData(ICON_FONT.as_ptr(), ICON_FONT.len());
 
         let config_path = crate::config::AppConfig::config_path();
@@ -289,7 +324,8 @@ fn relaunch_as_admin() -> bool {
     };
     let verb = to_wide("runas");
     let file = to_wide(&exe.to_string_lossy());
-    let params = to_wide("--elevated");
+    // Keep the same portable/custom configuration across the UAC handoff.
+    let params = to_wide(&crate::startup::elevated_restart_parameters(AppConfig::config_path_ref()));
     let result = unsafe {
         ShellExecuteW(
             null_mut(),
@@ -340,9 +376,9 @@ fn main() {
         let is_active = crate::tsf::is_tsf_mode_active();
         let dll_path = crate::tsf::tsf_dll_path();
         let temp_dir = std::env::var("TEMP").unwrap_or_default();
-        let log_path = format!("{temp_dir}\\vietflow_tsf.log");
+        let log_path = format!("{temp_dir}\\vietxkey_tsf.log");
 
-        println!("=== VietFlow TSF Diagnostic Status ===");
+        println!("=== VietXKey TSF Diagnostic Status ===");
         println!("  Registered:   {is_reg}");
         println!("  Active Mode:  {is_active}");
         println!("  DLL Path:     {:?}", dll_path.as_ref().map(|p| p.display().to_string()));
@@ -354,7 +390,7 @@ fn main() {
 
     if args.iter().any(|a| a == "--log-tsf" || a == "--tail-tsf") {
         let temp_dir = std::env::var("TEMP").unwrap_or_default();
-        let log_path = format!("{temp_dir}\\vietflow_tsf.log");
+        let log_path = format!("{temp_dir}\\vietxkey_tsf.log");
         if let Ok(content) = std::fs::read_to_string(&log_path) {
             let lines: Vec<&str> = content.lines().collect();
             let tail_count = lines.len().saturating_sub(60);
@@ -383,11 +419,11 @@ fn main() {
                 config.use_tsf = true;
                 config.save();
                 crate::tsf::sync_tsf_config(&config, config.enabled);
-                println!("Đã đăng ký VietFlow TSF TIP thành công.");
+                println!("Đã đăng ký VietXKey TSF TIP thành công.");
                 std::process::exit(0);
             }
             Err(e) => {
-                eprintln!("Lỗi đăng ký VietFlow TSF TIP: {e}");
+                eprintln!("Lỗi đăng ký VietXKey TSF TIP: {e}");
                 std::process::exit(1);
             }
         }
@@ -409,11 +445,11 @@ fn main() {
                 let mut config = AppConfig::load();
                 config.use_tsf = false;
                 config.save();
-                println!("Đã hủy đăng ký VietFlow TSF TIP thành công.");
+                println!("Đã hủy đăng ký VietXKey TSF TIP thành công.");
                 std::process::exit(0);
             }
             Err(e) => {
-                eprintln!("Lỗi hủy đăng ký VietFlow TSF TIP: {e}");
+                eprintln!("Lỗi hủy đăng ký VietXKey TSF TIP: {e}");
                 std::process::exit(1);
             }
         }
@@ -427,49 +463,39 @@ fn main() {
     }
 
     unsafe {
-        // Enforce single instance for daemon. An elevated relaunch is started
-        // by the old process, so give the old mutex a few seconds to disappear.
         let mutex_name = to_wide(MUTEX_SINGLE_INSTANCE);
         let elevated = args.iter().any(|a| a == "--elevated");
-        let mut mutex = CreateMutexW(null_mut(), 1, mutex_name.as_ptr());
-        let mut last_error = GetLastError();
-        if elevated && last_error == ERROR_ALREADY_EXISTS {
-            if !mutex.is_null() {
-                CloseHandle(mutex);
-            }
-            for _ in 0..40 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                mutex = CreateMutexW(null_mut(), 1, mutex_name.as_ptr());
-                last_error = GetLastError();
-                if last_error != ERROR_ALREADY_EXISTS {
-                    break;
+        let _instance = match acquire_daemon_instance(&mutex_name, elevated) {
+            Ok(instance) => instance,
+            Err(last_error) => {
+                if last_error == ERROR_ALREADY_EXISTS {
+                    // Windows can invoke a Run entry after a previous session has
+                    // already restored the daemon. Respect background-only startup.
+                    if args.iter().any(|arg| arg == "--startup")
+                        && !crate::startup::should_show_settings_on_launch(&args, &AppConfig::load()) {
+                        return;
+                    }
+                    if !open_existing_settings() {
+                        let message = to_wide(
+                            "VietXKey đang chạy trên hệ thống!\n\nNhấn vào biểu tượng [V] / [E] ở góc phải dưới thanh tác vụ để mở bảng điều khiển."
+                        );
+                        let title = to_wide("VietXKey - Đang hoạt động");
+                        MessageBoxW(
+                            null_mut(),
+                            message.as_ptr(),
+                            title.as_ptr(),
+                            MB_OK | MB_ICONINFORMATION | 0x00040000 | 0x00010000,
+                        );
+                    }
+                } else {
+                    show_error("Không thể khởi động VietXKey.");
                 }
-                if !mutex.is_null() {
-                    CloseHandle(mutex);
-                }
+                return;
             }
-        }
-        if mutex.is_null() || last_error == ERROR_ALREADY_EXISTS {
-            if last_error == ERROR_ALREADY_EXISTS {
-                if !open_existing_settings() {
-                    let message = to_wide(
-                        "VietFlow đang chạy trên hệ thống!\n\nNhấn vào biểu tượng [V] / [E] ở góc phải dưới thanh tác vụ để mở bảng điều khiển."
-                    );
-                    let title = to_wide("VietFlow - Đang hoạt động");
-                    MessageBoxW(
-                        null_mut(),
-                        message.as_ptr(),
-                        title.as_ptr(),
-                        MB_OK | MB_ICONINFORMATION | 0x00040000 | 0x00010000,
-                    );
-                }
-            } else {
-                show_error("Không thể khởi động VietFlow.");
-            }
-            return;
-        }
+        };
 
         let config = AppConfig::load();
+        let show_launch_settings = crate::startup::should_show_settings_on_launch(&args, &config);
         warn_ime_conflicts();
 
         let class_name = to_wide(WINDOW_CLASS_DAEMON);
@@ -525,6 +551,12 @@ fn main() {
 
         *CONFIG_MTIME.lock().unwrap() = config_mtime();
         SetTimer(hwnd, TIMER_ID_CONFIG, 250, None);
+
+        // The daemon and tray are ready before opening the isolated UI child.
+        // The child receives --settings only, so this cannot recursively launch.
+        if show_launch_settings {
+            PostMessageW(hwnd, WM_SETTINGS, 0, 0);
+        }
 
         trim_working_set();
 
@@ -774,14 +806,14 @@ unsafe extern "system" fn wnd_proc(
                                 }
                                 if !is_reg {
                                     show_message(
-                                        "Đã cài đặt và đăng ký VietFlow TSF IME thành công.\n\nChế độ TSF xử lý trực tiếp trong từng ứng dụng. Tiến trình chạy nền sẽ tự đóng.\nBạn có thể mở lại VietFlow bất cứ lúc nào để chỉnh bảng điều khiển.",
+                                        "Đã cài đặt và đăng ký VietXKey TSF IME thành công.\n\nChế độ TSF xử lý trực tiếp trong từng ứng dụng. Tiến trình chạy nền sẽ tự đóng.\nBạn có thể mở lại VietXKey bất cứ lúc nào để chỉnh bảng điều khiển.",
                                         MB_OK | MB_ICONINFORMATION,
                                     );
                                     DestroyWindow(hwnd);
                                     return 0;
                                 } else {
                                     show_message(
-                                        "Đã hủy đăng ký VietFlow TSF IME thành công.\nVietFlow tiếp tục hoạt động ở chế độ Hook truyền thống.",
+                                        "Đã hủy đăng ký VietXKey TSF IME thành công.\nVietXKey tiếp tục hoạt động ở chế độ Hook truyền thống.",
                                         MB_OK | MB_ICONINFORMATION,
                                     );
                                     reload_runtime_config(hwnd);
@@ -905,6 +937,45 @@ unsafe fn toggle_mode(_hwnd: HWND) {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+
+    fn instance_test_name(suffix: &str) -> Vec<u16> {
+        to_wide(&format!("Local\\VietXKey_Instance_Test_{}_{}_{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(), suffix))
+    }
+
+    #[test]
+    fn admin_restart_waits_for_old_owner_and_never_starts_two_daemons() {
+        let name = instance_test_name("handoff");
+        let owner = unsafe { acquire_daemon_instance(&name, false).unwrap() };
+        assert!(unsafe { acquire_daemon_instance(&name, false) }.is_err());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let child_name = name.clone();
+        let child = std::thread::spawn(move || {
+            let acquired = unsafe { acquire_daemon_instance(&child_name, true).unwrap() };
+            tx.send(()).unwrap();
+            drop(acquired);
+        });
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(100)).is_err());
+        drop(owner);
+        rx.recv_timeout(std::time::Duration::from_secs(2)).expect("admin should acquire after shutdown");
+        child.join().unwrap();
+        drop(unsafe { acquire_daemon_instance(&name, false).unwrap() });
+    }
+
+    #[test]
+    fn admin_restart_recovers_mutex_abandoned_by_exiting_old_owner() {
+        let name = instance_test_name("abandoned");
+        let child_name = name.clone();
+        let old_handle = std::thread::spawn(move || {
+            let owner = unsafe { acquire_daemon_instance(&child_name, false).unwrap() };
+            let handle = owner.0 as usize;
+            std::mem::forget(owner); // emulate process/thread exit without releasing
+            handle
+        }).join().unwrap();
+        let next = unsafe { acquire_daemon_instance(&name, true).unwrap() };
+        drop(next);
+        unsafe { CloseHandle(old_handle as HANDLE); }
+    }
 
     #[test]
     fn mode_saves_are_coalesced_and_rearmed_after_snapshot() {

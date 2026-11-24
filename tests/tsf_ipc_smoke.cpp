@@ -27,7 +27,9 @@ int main() {
     if (!config || !focus) return Fail("mapping view");
     *config = {};
     *focus = {};
-    config->version = 2;
+    config->version = 4;
+    config->foreign_initials_mask = 1u << ('z' - 'a');
+    config->preserve_informal_marks = 1;
     config->enabled = 1;
     config->method = 3;
     config->sequence = 0;
@@ -37,8 +39,9 @@ int main() {
         SharedConfigReader reader(configName.c_str(), focusName.c_str());
         reader.UpdateActiveFocus(true);
         const TsfSharedConfig initial = reader.Get();
-        if (initial.method != 3 || initial.version != 2)
+        if (initial.method != 3 || initial.version != 4 || initial.foreign_initials_mask != (1u << ('z' - 'a')))
             result = Fail("initial coherent read");
+        if (initial.preserve_informal_marks != 1) result = Fail("free-writing flag missing");
         if (focus->last_active_pid != GetCurrentProcessId())
             result = Fail("published process focus");
         // Odd sequence blocks inconsistent snapshots: cached stable config wins.
@@ -49,6 +52,16 @@ int main() {
         config->sequence = 2;
         if (reader.Get().method != 5)
             result = Fail("committed config reader");
+        config->foreign_initials_mask = 0;
+        config->preserve_informal_marks = 0;
+        config->sequence = 4;
+        if (reader.Get().preserve_informal_marks != 0) result = Fail("free-writing flag did not turn off");
+        if (reader.Get().foreign_initials_mask != 0)
+            result = Fail("cleared foreign initials");
+        config->foreign_initials_mask = 1u << ('z' - 'a');
+        config->sequence = 6;
+        if (reader.Get().foreign_initials_mask != (1u << ('z' - 'a')))
+            result = Fail("restored foreign initials");
 
         // The native reader must not accept tampered or malformed IPC fields,
         // even if the shared sequence/version look coherent.
@@ -88,10 +101,12 @@ int main() {
         rejectMalformed(malformed, "invalid auto_switch_by_typing");
         malformed = valid; malformed.enable_macro = 3;
         rejectMalformed(malformed, "invalid enable_macro");
+        malformed = valid; malformed.preserve_informal_marks = 2;
+        rejectMalformed(malformed, "invalid free-writing flag");
         malformed = valid; malformed.version = 3;
         rejectMalformed(malformed, "invalid version");
-        malformed = valid; malformed.reserved = 0xFFFFFFFF;
-        rejectMalformed(malformed, "invalid reserved");
+        malformed = valid; malformed.foreign_initials_mask = 0xFFFFFFFF;
+        rejectMalformed(malformed, "invalid foreign initials mask");
 
         reader.UpdateActiveKeystroke(true);
         if (focus->is_composing != 1)

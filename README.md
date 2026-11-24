@@ -1,78 +1,86 @@
-# VietFlow
+# VietXKey
 
-Lightweight, memory-safe native Vietnamese input method for Windows.
-Rust core engine and hook daemon with an isolated Dear ImGui + DirectX 11 settings UI.
+**Bộ gõ tiếng Việt gọn nhẹ và gần gũi, dành cho Windows.**
 
-<p align="center">
-  <img src="assets/screenshot.png" alt="VietFlow Settings UI" width="760" />
-</p>
+Fix lỗi và phát triển thêm bởi **Minh Tâm Đoàn**, từ dự án [VietFlow của VietFlow Team](https://github.com/KienPC1234/VietFlow). Lõi gõ kế thừa thuật toán UniKey của Phạm Kim Long.
 
-Repository: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
+[Trang giới thiệu](https://tiemcuoimay2025.github.io/VietXKey/) · [Tải bản Windows x64](https://tiemcuoimay2025.github.io/VietXKey/downloads/VietXKey-windows-x64.zip) · [Góp ý / báo lỗi](https://github.com/tiemcuoimay2025/VietXKey/issues)
 
-## Key Features
+<p align="center"><img src="assets/VietXKey.png" alt="Logo phím V xanh rêu" width="96"></p>
+<p align="center"><img src="assets/screenshot.png" alt="Giao diện VietXKey nền tối, điểm nhấn xanh rêu" width="900"></p>
 
-- **Hybrid Input**: Native Text Services Framework (TSF TIP) for zero-backspace typing in modern apps, plus a 0ms low-level hook with hardware key repeat (WASD) for games.
-- **Game Safe**: Automatic global hotkey locking (Ctrl+Shift / Alt+Z) and smart UWP/Xbox container detection (Roblox, CS2, Valorant).
-- **Per-App Overrides**: Custom typing method, charset, key-injection mode, and macro access per executable.
-- **Resource Footprint**: Always-on daemon uses ~2.0–2.9 MB private bytes (lowest measured footprint) and 0% idle CPU. Settings UI runs out-of-process and frees 100% RAM/GPU when closed.
-- **Smart English Habit**: Phonotactic restoration prevents mangling common technical words (`test`, `reset`, `setup`).
-- **Native Multi-Arch**: Static MSVC builds for x64, x86, and ARM64 (no VC++ Redistributable required). High-DPI vector UI (100%–200%).
+## Tính năng
 
-## Feature Comparison
+- Telex, VNI, nhiều bảng mã và phím chuyển Việt / Anh tùy chọn.
+- Gõ tắt, với mẫu mặc định `vxk` → `VietXKey`.
+- Thiết lập riêng theo ứng dụng và danh sách ứng dụng bỏ qua.
+- Giao diện **sáng / tối**, nền chuyển sắc mềm, font Nunito chữ lớn và điểm nhấn xanh rêu. Lưu lựa chọn cho lần mở sau.
+- Giữ từ tiếng Anh, phụ âm ngoại lai và tùy chọn giữ dấu khi viết không chuẩn chính tả.
+- Khởi động cùng Windows, với tùy chọn mở bảng điều khiển khi đăng nhập.
+- Bộ gõ thông thường qua Windows Hook; tùy chọn Text Services Framework (TSF) do Windows quản lý.
 
-| Feature / Capability | VietFlow | EVKey | OpenKey | UniKey 4.3 |
-| :--- | :--- | :--- | :--- | :--- |
-| **Language & Architecture** | Rust std (Memory-safe) | C++ (Win32 API) | C++ (Win32 API) | C++ (MFC / Win32) |
-| **Memory Safety & Stability** | 100% Memory-Safe (zero buffer overflows, no data races) | Unsafe C++ (raw pointers, memory corruption risks) | Unsafe C++ (raw pointers) | Unsafe C++ (raw pointers) |
-| **Input Delivery Modes** | Hybrid: Modern TSF TIP (Windows 10/11) + Low-Level Hook | Dual: Low-Level Hook + Classic IME (IMM32) | Low-Level Hook only | Low-Level Hook only |
-| **Daemon Memory Footprint** | ~2.0–2.9 MB Private Bytes (lowest measured) | ~8–15 MB Private Bytes | ~6–10 MB Private Bytes | ~3–5 MB Private Bytes |
-| **UI Isolation** | Out-of-process DirectX 11 + ImGui (frees 100% RAM/GPU) | Monolithic Win32 Dialog | Monolithic Win32 Dialog | Monolithic MFC Dialog |
-| **Game Movement (WASD)** | 0ms Native Passthrough + Auto-Repeat | Heuristic passthrough | vDoNothing passthrough | Frequent key locks |
-| **In-Game Hotkey Lock** | Automatic lock in excluded apps | Manual switch only | None | None |
-| **Per-App Profile Overrides** | Yes (Engine, Charset, Macro, Mode) | Basic E/V switch list | Registry E/V toggle list | None |
-| **Browser URL Bar Conflict** | Native in TSF / Minimal diffing | Temporary char hack | Narrow space hack (0x202F) | Freezes / suggestion collision |
-| **Windows on ARM (ARM64)** | Native ARM64, x64, x86 | Emulated x86 | Emulated x86/x64 | Emulated x86 |
-| **High-DPI Scaling** | Native vector rendering (100%–200%) | GDI custom draw (fixed assets) | Blurry GDI controls | Blurry bitmap icons |
-| **Dynamic Macro Tokens** | `@date`, `@time`, `@clipboard`, CSV/TSV | Static text only | Static text only | Static text only |
-| **License & Auditing** | Open Source (GPLv3, audited) | Closed Source (Windows freeware) | Open Source (GPLv3) | Closed Source (v4.3) |
+Các bản sửa trong nhánh này gồm tổ hợp Ctrl+Shift ba phím, khôi phục tiếng Anh theo từng từ, Telex `WWindows`, `DDaf Nawngx`, `zeef`, `ofh` / `ohf`, `zoo` và việc thay chữ trong ô nhập Chromium / Comet. Phạm vi và các ca kiểm tra nằm trong [docs/INPUT_FIXES.md](docs/INPUT_FIXES.md).
 
-## Layout
+## Sử dụng
 
-```
-core/                  Vietnamese engine (Rust std, C ABI in ffi/vietflow_core.h)
-platforms/windows/     Win32 hook daemon, tray host, config watcher, updater
-platforms/windows_tsf/ Text Services Framework (TSF) TIP COM server
-ui_imgui/              Dear ImGui + DirectX 11 settings UI
-assets/                Application and tray icons
-scripts/               Build, packaging, and release scripts
-```
+1. Tải gói ZIP Windows x64 từ trang giới thiệu.
+2. Giải nén, giữ `VietXKey.exe` và `vietxkey_tsf.dll` cùng thư mục.
+3. Mở `VietXKey.exe`, chọn kiểu gõ và bảng mã. Đóng bảng điều khiển để tiếp tục chạy ở khay hệ thống.
 
-## Build
+Mở EXE thủ công hoặc chạy lại với quyền quản trị sẽ hiện bảng điều khiển. Tùy chọn mở bảng điều khiển khi khởi động cùng Windows chỉ áp dụng khi đăng nhập. Chi tiết: [docs/STARTUP_SETTINGS.md](docs/STARTUP_SETTINGS.md).
 
-Requirements: Rust 1.75+, CMake 3.20+, and Visual Studio Desktop C++ Build Tools.
+Cài đặt được lưu vào `vietxkey_config.json`. Cấu hình VietFlow cũ hợp lệ được di chuyển an toàn; file gốc được giữ. Thoát bản đang chạy trước khi thay cả EXE và DLL. Nếu DLL đang bị một ứng dụng giữ, đóng ứng dụng đó rồi cập nhật và mở lại.
+
+**Phạm vi bản tải:** portable Windows x64. Chưa phát hành MSI VietXKey, macOS hoặc Linux. Trong TSF, danh sách từ tiếng Anh tùy chỉnh / xóa từ hiện chưa được áp dụng; TSF dùng quy tắc tiếng Anh có sẵn. Hai chế độ cùng nhận tùy chọn giữ dấu không chuẩn chính tả.
+
+## Build từ mã nguồn
+
+Cần Windows, Rust stable (MSVC), Visual Studio 2022 Desktop development with C++, Windows SDK và CMake 3.20 trở lên. Dùng PowerShell có `cargo`, `cmake` và `git` trong PATH.
 
 ```powershell
-# Clone with submodules
-git clone --recurse-submodules https://github.com/KienPC1234/VietFlow.git
-
-# Test workspace
-cargo test
-
-# Build release (x64, static CRT -> dist\VietFlow.exe)
-.\scripts\build.ps1
-
-# Build all architectures with native WiX MSI installers
-.\scripts\build.ps1 -Arch All -Msi
+git clone --recurse-submodules https://github.com/tiemcuoimay2025/VietXKey.git
+cd VietXKey
+./scripts/build-vietxkey.ps1
 ```
 
-## Donation
+Script chạy kiểm thử workspace, build UI C++ với CRT tĩnh, EXE Rust và TSF DLL x64. Kết quả tại `dist/VietXKey-x64/`. Các tên crate, C ABI và IPC nội bộ vẫn dùng VietFlow để giữ tính tương thích.
 
-If VietFlow saves you time, you can support the project via VietQR (Techcombank `9978 5892 20` - HA TRI KIEN):
+Kiểm tra cấu hình C++ riêng:
 
-<p align="center">
-  <img src="https://img.vietqr.io/image/970407-9978589220-compact2.png?amount=0&addInfo=Ung%20ho%20VietFlow&accountName=HA%20TRI%20KIEN" alt="VietQR code for supporting VietFlow" width="220" />
-</p>
+```powershell
+cmake -S ui_imgui -B ui_imgui/build -DVIETFLOW_BUILD_CONFIG_TESTS=ON -DVIETFLOW_STATIC_CRT=ON
+cmake --build ui_imgui/build --config Release
+ctest --test-dir ui_imgui/build -C Release --output-on-failure
+```
 
-## License
+Script `scripts/generate-brand-assets.py` chỉ dành cho người bảo trì muốn xuất lại logo SVG/PNG/ICO, cần Pillow và Node.js + sharp. Build thông thường dùng sẵn tài nguyên đã commit.
 
-GPLv3 License. Core Vietnamese input algorithm is derived from UniKey (Pham Kim Long).
+## Website
+
+`site/` là trang tĩnh HTML/CSS/JavaScript, không cần bundler. Chạy thử từ thư mục dự án:
+
+```powershell
+python -m http.server 8080 --directory site
+```
+
+Mở `http://localhost:8080`. GitHub Actions trong `.github/workflows/pages.yml` triển khai thư mục này lên GitHub Pages khi `site/` thay đổi trên `main`. Gói ZIP trong `site/downloads/` là bản x64 được kiểm tra, có SHA256 đi kèm. Workflow build ứng dụng riêng chạy thủ công hoặc khi có pull request, không tự phát hành Release.
+
+## Cấu trúc
+
+| Thư mục | Nội dung |
+| --- | --- |
+| `core/` | Lõi gõ Rust std và kiểm thử |
+| `platforms/windows/` | Host Windows, Hook, khay hệ thống, cấu hình |
+| `platforms/windows_tsf/` | DLL Text Services Framework |
+| `ui_imgui/` | Bảng điều khiển C++ / Dear ImGui / DirectX 11 |
+| `ffi/` | Giao diện C ABI |
+| `assets/` | Logo và ảnh giao diện |
+| `site/` | Trang giới thiệu và bản tải Windows x64 |
+
+## Nguồn gốc và giấy phép
+
+VietXKey giữ lịch sử Git của [VietFlow](https://github.com/KienPC1234/VietFlow), bản nền v0.1.4, và giấy phép [GPL-3.0-or-later](LICENSE). Thuật toán tiếng Việt kế thừa UniKey của Phạm Kim Long. Những thay đổi và phạm vi kiểm chứng của VietXKey được ghi trong [docs/UI_MOSS.md](docs/UI_MOSS.md) và [docs/BRANDING.md](docs/BRANDING.md).
+
+Font Nunito được phân phối theo SIL Open Font License; các font, Dear ImGui và nlohmann/json giữ giấy phép riêng trong mã nguồn và gói portable. Logo phím V và giao diện VietXKey được dựng riêng, lấy cảm hứng từ nền chuyển sắc và hình khối phím của [Gau](https://gau.io.vn/), không dùng tài nguyên thương hiệu Gau.
+
+Nút **Ủng hộ tác giả** trong ứng dụng và website hiển thị mã QR do Minh Tâm Đoàn cung cấp.

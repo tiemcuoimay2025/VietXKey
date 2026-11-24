@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rerun-if-changed=../../assets/VietFlow.ico");
-    println!("cargo:rerun-if-changed=../../assets/VietFlow-TSF.ico");
+    println!("cargo:rerun-if-changed=../../assets/VietXKey.ico");
+    println!("cargo:rerun-if-changed=../../assets/VietXKey-TSF.ico");
 
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
@@ -41,6 +41,8 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", imgui_lib_dir.display());
         println!("cargo:rustc-link-lib=static=vietflow_ui");
         println!("cargo:rustc-link-lib=dylib=d3d11");
+        println!("cargo:rustc-link-lib=dylib=windowscodecs");
+        println!("cargo:rustc-link-lib=dylib=ole32");
         println!("cargo:rustc-link-lib=dylib=d3dcompiler");
         println!("cargo:rustc-link-lib=dylib=dxgi");
         println!("cargo:rustc-link-lib=dylib=dwmapi");
@@ -58,15 +60,15 @@ fn main() {
         let win_ver = format!("{}.{}.{}.0", part(0), part(1), part(2));
 
         let mut res = winres::WindowsResource::new();
-        res.set_icon("../../assets/VietFlow.ico");
-        res.set_icon_with_id("../../assets/VietFlow-TSF.ico", "2");
+        res.set_icon("../../assets/VietXKey.ico");
+        res.set_icon_with_id("../../assets/VietXKey-TSF.ico", "2");
         res.set_language(0x0409);
-        res.set("ProductName", "VietFlow");
-        res.set("FileDescription", "VietFlow - Modern Vietnamese Input Method");
-        res.set("CompanyName", "VietFlow Team");
-        res.set("Comments", "VietFlow - Modern Vietnamese Input Method");
-        res.set("InternalName", "VietFlow");
-        res.set("OriginalFilename", "VietFlow.exe");
+        res.set("ProductName", "VietXKey");
+        res.set("FileDescription", "VietXKey - Vietnamese Input Method");
+        res.set("CompanyName", "VietXKey");
+        res.set("Comments", "VietXKey - Vietnamese Input Method");
+        res.set("InternalName", "VietXKey");
+        res.set("OriginalFilename", "VietXKey.exe");
         res.set("FileVersion", &win_ver);
         res.set("ProductVersion", &win_ver);
         res.set("LegalCopyright", "Copyright (C) 2026 VietFlow Team. GNU GPL v3.0");
@@ -76,10 +78,10 @@ fn main() {
   <assemblyIdentity
     version="{win_ver}"
     processorArchitecture="*"
-    name="VietFlow.VietFlowTeam.VietFlow"
+    name="VietXKey.VietXKey"
     type="win32"
   />
-  <description>VietFlow - Modern Vietnamese Input Method</description>
+  <description>VietXKey - Vietnamese Input Method</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity

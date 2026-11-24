@@ -38,6 +38,8 @@ add_library(vietflow_tsf SHARED
     vietflow_tsf.def
 )
 
+set_target_properties(vietflow_tsf PROPERTIES OUTPUT_NAME "vietxkey_tsf")
+
 target_include_directories(vietflow_tsf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ffi

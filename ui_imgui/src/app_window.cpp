@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "ui_manager.h"
 #include "theme.h"
+#include "donation_qr.h"
 
 #include <d3d11.h>
 #include <dwmapi.h>
@@ -74,10 +75,12 @@ static bool CreateDeviceD3D(HWND hWnd) {
         CleanupDeviceD3D();
         return false;
     }
+    LoadDonationQrTexture(g_pd3dDevice);
     return true;
 }
 
 static void CleanupDeviceD3D() {
+    ReleaseDonationQrTexture();
     CleanupRenderTarget();
     if (g_pSwapChain) { g_pSwapChain->Release(); g_pSwapChain = nullptr; }
     if (g_pd3dDeviceContext) { g_pd3dDeviceContext->Release(); g_pd3dDeviceContext = nullptr; }
@@ -105,10 +108,10 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     switch (msg) {
         case WM_GETMINMAXINFO: {
-            // Keep the client area large enough for the tab bar + content so
+            // Keep the client area large enough for the sidebar + content so
             // widgets cannot overlap when the user shrinks the window.
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;
-            RECT r = { 0, 0, (LONG)(760.0f * g_dpi_scale), (LONG)(560.0f * g_dpi_scale) };
+            RECT r = { 0, 0, (LONG)(1000.0f * g_dpi_scale), (LONG)(660.0f * g_dpi_scale) };
             AdjustWindowRectEx(&r, WS_OVERLAPPEDWINDOW, FALSE, 0);
             mmi->ptMinTrackSize.x = r.right - r.left;
             mmi->ptMinTrackSize.y = r.bottom - r.top;
@@ -186,8 +189,8 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
     if (dpi_scale <= 0.0f) dpi_scale = 1.0f;
     g_dpi_scale = dpi_scale;
 
-    const int init_w = (int)(980.0f * dpi_scale);
-    const int init_h = (int)(660.0f * dpi_scale);
+    const int init_w = (int)(1140.0f * dpi_scale);
+    const int init_h = (int)(800.0f * dpi_scale);
 
     // Center inside the primary monitor's work area (excludes taskbar) instead
     // of the full virtual screen, which is wrong on multi-monitor setups.
@@ -245,7 +248,11 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
         return 1;
     }
 
-    ShowWindow(hwnd, SW_SHOWDEFAULT);
+    // A tray/autorun parent can pass hidden/minimized startup state. Windows
+    // may apply it to the first ShowWindow call; the second restores the UI.
+    ShowWindow(hwnd, SW_SHOWNORMAL);
+    ShowWindow(hwnd, SW_RESTORE);
+    SetForegroundWindow(hwnd);
     UpdateWindow(hwnd);
 
     IMGUI_CHECKVERSION();
@@ -270,6 +277,7 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
 
     bool done = false;
     bool device_released = false;
+    BOOL caption_dark = TRUE;
     while (!done) {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
@@ -325,9 +333,14 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
         ImGui::NewFrame();
 
         ui_mgr.Render();
+        const BOOL next_caption_dark = IsDarkTheme() ? TRUE : FALSE;
+        if (next_caption_dark != caption_dark) {
+            caption_dark = next_caption_dark;
+            DwmSetWindowAttribute(hwnd, 20, &caption_dark, sizeof(caption_dark));
+        }
 
         ImGui::Render();
-        const float clear_color[4] = { 0.06f, 0.07f, 0.09f, 1.00f };
+        const float clear_color[4] = { 0.07f, 0.07f, 0.075f, 1.00f };
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
