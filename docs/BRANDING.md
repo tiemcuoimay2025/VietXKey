@@ -41,3 +41,8 @@ explicit theme, system-theme changes, screenshot modal, support QR modal,
 Escape / close / backdrop dismissal, FAQ, local anchors and exact ZIP bytes.
 The website has no analytics or remotely loaded fonts. Its theme choice is
 separate from the desktop app's preference.
+
+The Pages workflow separates artifact preparation from deployment, waits for the
+uploaded artifact's REST metadata to become visible, and gives every run/attempt
+a unique artifact name. This avoids immediate post-upload lookup races and
+ambiguous duplicate artifacts when GitHub reruns a failed deployment.
